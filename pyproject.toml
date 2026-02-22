@@ -1,0 +1,13 @@
+[project]
+name = "macgent"
+version = "0.1.0"
+description = "macOS automation agent with LLM-driven observe-think-act loop"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+macgent = "macgent.__main__:main"
