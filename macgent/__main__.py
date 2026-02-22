@@ -138,6 +138,7 @@ def _run_daemon(config, interval: int, once: bool = False):
 
 async def _run_daemon_async(config, interval: int, once: bool):
     """Async daemon that runs Telegram polling alongside the sync heartbeat loop."""
+    import asyncio
     from macgent.db import DB
     from macgent.memory import MemoryManager
     from macgent.roles.manager import ManagerRole
