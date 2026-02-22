@@ -7,6 +7,15 @@ from macgent.prompts.role_prompts import WORKER_PLAN_PROMPT, WORKER_LEARN_PROMPT
 logger = logging.getLogger("macgent.roles.worker")
 
 
+def _notify_task_update(config, db, task_id: int):
+    """Send Telegram notification for task update (non-blocking)."""
+    try:
+        from macgent.telegram_bot import sync_notify_task_update
+        sync_notify_task_update(config, db, task_id)
+    except Exception as e:
+        logger.debug(f"Failed to send Telegram notification: {e}")
+
+
 class WorkerRole(BaseRole):
     role_name = "worker"
 
@@ -171,6 +180,7 @@ class WorkerRole(BaseRole):
                 print("  Worker: Stakeholder unavailable, marking completed")
                 self.db.update_task(task_id, status="completed")
                 self._learn_from_task(task, result)
+                _notify_task_update(self.config, self.db, task_id)
                 return
 
             if review.get("escalate", False):
@@ -179,6 +189,7 @@ class WorkerRole(BaseRole):
                                      review_note=review.get("note", ""),
                                      escalation="Stakeholder escalated")
                 self.db.log("worker", "escalated", review.get("note", ""), task_id)
+                _notify_task_update(self.config, self.db, task_id)
                 return
 
             if review.get("approved", False):
@@ -187,6 +198,7 @@ class WorkerRole(BaseRole):
                                      review_note=review.get("note", ""))
                 self.db.log("worker", "completed", review.get("note", ""), task_id)
                 self._learn_from_task(task, result)
+                _notify_task_update(self.config, self.db, task_id)
                 return
 
             # Rejected — retry with feedback
@@ -207,6 +219,7 @@ class WorkerRole(BaseRole):
         self.db.update_task(task_id, status="escalated",
                              escalation="Max review rounds exceeded")
         self.db.log("worker", "escalated", "Max review rounds", task_id)
+        _notify_task_update(self.config, self.db, task_id)
 
     def _learn_from_task(self, task: dict, result: str):
         """Extract and store a lesson from the completed task."""

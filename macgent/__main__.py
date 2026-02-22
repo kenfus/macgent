@@ -63,6 +63,10 @@ def main():
     soul_p.add_argument("action", choices=["edit", "show"], help="Action")
     soul_p.add_argument("role", choices=["manager", "worker", "stakeholder"], help="Role")
 
+    # macgent telegram — run Telegram bot polling
+    telegram_p = sub.add_parser("telegram", help="Run Telegram bot polling")
+    telegram_p.add_argument("--once", action="store_true", help="Process one batch of messages then exit")
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -95,6 +99,9 @@ def main():
 
     elif args.command == "soul":
         _soul_command(config, args.action, args.role)
+
+    elif args.command == "telegram":
+        _run_telegram(config, once=args.once)
 
 
 def _run_task(config, description: str):
@@ -235,6 +242,40 @@ def _soul_command(config, action: str, role: str):
             mm = MemoryManager(config)
             mm._ensure_default_souls()
         os.execvp(editor, [editor, str(soul_path)])
+
+
+def _run_telegram(config, once: bool = False):
+    """Run Telegram bot polling."""
+    import asyncio
+    from macgent.db import DB
+    from macgent.telegram_bot import TelegramBot
+
+    if not config.telegram_bot_token:
+        print("ERROR: Set TELEGRAM_BOT_TOKEN in .env file")
+        sys.exit(1)
+
+    db = DB(config.db_path)
+    bot = TelegramBot(config, db)
+
+    if once:
+        # Run one batch of updates then exit
+        async def fetch_once():
+            updates = await bot.get_updates(timeout=5)
+            for update in updates:
+                bot.offset = update["update_id"] + 1
+                if "message" in update:
+                    await bot.process_message(update["message"])
+                elif "callback_query" in update:
+                    await bot.handle_callback_query(update["callback_query"])
+            print(f"Processed {len(updates)} updates")
+
+        asyncio.run(fetch_once())
+    else:
+        # Run continuous polling
+        try:
+            asyncio.run(bot.run_polling())
+        except KeyboardInterrupt:
+            print("\nTelegram bot stopped.")
 
 
 def _print_result(state):

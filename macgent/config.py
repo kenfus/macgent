@@ -40,6 +40,10 @@ class Config:
     max_ping_pong_rounds: int = 3
     stale_task_minutes: int = 60
 
+    # Telegram Bot
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+
     # Paths
     db_path: str = ""
     souls_dir: str = ""
@@ -66,6 +70,8 @@ class Config:
             daemon_interval=int(os.getenv("DAEMON_INTERVAL", str(cls.daemon_interval))),
             max_ping_pong_rounds=int(os.getenv("MAX_PING_PONG_ROUNDS", str(cls.max_ping_pong_rounds))),
             stale_task_minutes=int(os.getenv("STALE_TASK_MINUTES", str(cls.stale_task_minutes))),
+            telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
+            telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
             db_path=os.getenv("MACGENT_DB_PATH", str(macgent_dir / "macgent.db")),
             souls_dir=os.getenv("MACGENT_SOULS_DIR", str(macgent_dir / "souls")),
             faiss_path=os.getenv("MACGENT_FAISS_PATH", str(macgent_dir / "memory.faiss")),
