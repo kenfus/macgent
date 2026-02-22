@@ -125,8 +125,16 @@ class Agent:
         try:
             obs.url = get_safari_url()
             obs.page_title = get_safari_title()
-        except Exception as e:
-            obs.error = f"Safari not accessible: {e}"
+        except Exception:
+            # Safari has no window open — open a blank one and report no page yet
+            try:
+                from macgent.actions.safari_actions import ensure_safari_window
+                ensure_safari_window()
+                obs.url = "about:blank"
+                obs.page_title = "New window opened"
+                obs.page_text = "(No page loaded yet. Use navigate to go to a URL.)"
+            except Exception as e:
+                obs.error = f"Safari not accessible: {e}"
             return obs
 
         # Page structure + text + elements

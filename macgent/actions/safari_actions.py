@@ -5,12 +5,42 @@ from macgent.perception.safari import run_osascript, execute_js_in_safari
 logger = logging.getLogger("macgent.actions.safari")
 
 
+def ensure_safari_window(url: str = "about:blank") -> None:
+    """Ensure Safari is open and has at least one window. Opens one if needed."""
+    run_osascript('tell application "Safari" to activate')
+    time.sleep(0.5)
+    # Check if there's a front window
+    check = '''
+    tell application "Safari"
+        if (count of windows) = 0 then
+            make new document with properties {URL:"''' + url + '''"}
+        else if (count of tabs of front window) = 0 then
+            tell front window to make new tab with properties {URL:"''' + url + '''"}
+        end if
+    end tell
+    '''
+    try:
+        run_osascript(check)
+        time.sleep(1)
+    except Exception as e:
+        logger.warning(f"ensure_safari_window failed: {e}")
+
+
 def navigate(url: str) -> str:
-    """Navigate Safari to a URL."""
+    """Navigate Safari to a URL. Opens a window if none exists."""
     if not url.startswith("http://") and not url.startswith("https://"):
         url = "https://" + url
     escaped = url.replace('"', '\\"')
-    run_osascript(f'tell application "Safari" to set URL of current tab of front window to "{escaped}"')
+
+    # Try direct navigation first; if it fails because there's no window, open one
+    script = f'tell application "Safari" to set URL of current tab of front window to "{escaped}"'
+    try:
+        run_osascript(script)
+    except RuntimeError:
+        # No front window — open Safari with the URL directly
+        ensure_safari_window(url)
+        run_osascript(f'tell application "Safari" to set URL of current tab of front window to "{escaped}"')
+
     run_osascript('tell application "Safari" to activate')
     time.sleep(2)
     return f"Navigated to {url}"
@@ -198,8 +228,11 @@ def scroll_page(direction: str = "down", amount: int = 500) -> str:
 
 
 def new_tab(url: str = "") -> str:
-    """Open a new Safari tab, optionally with a URL."""
+    """Open a new Safari tab, optionally with a URL. Opens a window if none exists."""
+    ensure_safari_window()
     if url:
+        if not url.startswith("http://") and not url.startswith("https://"):
+            url = "https://" + url
         escaped = url.replace('"', '\\"')
         run_osascript(f'''
             tell application "Safari"
