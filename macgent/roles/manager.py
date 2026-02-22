@@ -13,12 +13,37 @@ class ManagerRole(BaseRole):
 
     def __init__(self, config, db, memory):
         super().__init__(config, db, memory)
+        # Active monitors - check these sources during each heartbeat
         self.monitors = [EmailMonitor()]
+        # TODO: Add more monitors as needed
+        # from macgent.monitors.notion_monitor import NotionMonitor
+        # from macgent.monitors.slack_monitor import SlackMonitor
+        # self.monitors.extend([NotionMonitor(), SlackMonitor()])
+
+    def should_wake_early(self) -> bool:
+        """Check if an external system has requested an immediate heartbeat."""
+        row = self.db.conn.execute(
+            "SELECT metadata FROM monitor_state WHERE source = ?",
+            ("_wake_request",)
+        ).fetchone()
+        return bool(row)
+
+    def clear_wake_request(self):
+        """Clear the wake request after handling it."""
+        self.db.conn.execute("DELETE FROM monitor_state WHERE source = ?", ("_wake_request",))
+        self.db.conn.commit()
 
     def tick(self):
         """One heartbeat cycle: check notifications, manage board."""
         logger.info("Manager tick starting")
         self.db.log("manager", "tick_start")
+
+        # Check if woken by external notification
+        woken_early = self.should_wake_early()
+        if woken_early:
+            logger.info("Manager woken by external notification (Telegram, Slack, etc.)")
+            print("  Manager: Woken by external notification!")
+            self.clear_wake_request()
 
         # 1. Check all notification sources
         all_notifications = []

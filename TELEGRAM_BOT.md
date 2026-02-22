@@ -63,33 +63,59 @@ Both processes share the same database and will coordinate:
 
 ## How It Works
 
-### Incoming Messages
+### Incoming Messages (Passive Notifications)
 When a message is sent to the bot:
 1. Bot receives and parses the message
-2. Creates a task in the database with source `telegram_<user_id>`
-3. Sends acknowledgment back to the user
-4. Manager picks it up and routes to Worker/Stakeholder
+2. Creates a task in the database with source `telegram_<user_id>` and priority 2
+3. **Sends wake signal to Manager** (triggers immediate heartbeat)
+4. Sends acknowledgment back to the user
+5. Manager wakes up immediately (even if sleeping on the daemon interval)
+6. Manager → Worker → Stakeholder processes the task
+
+This is a **passive notification** system - the Manager gets pinged when messages arrive.
 
 ### Task Updates
 When a task status changes:
-1. Bot sends status update to the original sender
+1. Worker notifies via Telegram back to the original sender
 2. Messages include:
    - Current status (⏳ pending, 🔄 in progress, ✅ completed, ❌ failed, ⚠️ escalated)
    - Task result (if available)
    - Stakeholder feedback (if any)
 
+### Active Monitoring
+The Manager also **actively checks** various sources:
+- 📧 **Email Monitor** - Checks for new emails and classifies them into tasks
+- 📋 Notion boards (not yet implemented)
+- 📌 Slack channels (not yet implemented)
+
+These are checked periodically during each heartbeat cycle.
+
 ## Message Flow
 
 ```
-CEO/Stakeholder
-      ↓
-[Message] → Telegram Bot receives
-      ↓
-[Task created] → Database (source: telegram_<user_id>)
-      ↓
-Manager reviews → Worker executes → Stakeholder approves
-      ↓
-[Status update] → Telegram notification sent back to CEO
+Active Sources (checked every heartbeat):
+  Email → Manager classifies → Task created
+
+Passive Sources (ping Manager immediately):
+  Telegram/Slack message → Task created → Manager wakes up NOW
+                                 ↓
+                         (vs waiting for next heartbeat)
+                                 ↓
+  Manager → Worker executes → Stakeholder approves
+                                 ↓
+                    Telegram notification sent back
+```
+
+### Example Timeline
+
+```
+Time 0:00 - Manager heartbeat (active: check email, monitor board)
+Time 0:15 - CEO sends Telegram message
+          → Task created instantly
+          → Manager wakes from sleep (⚡)
+          → Manager/Worker/Stakeholder process immediately
+          → Result sent back within seconds
+Time 0:30 - Next scheduled heartbeat
 ```
 
 ## Features

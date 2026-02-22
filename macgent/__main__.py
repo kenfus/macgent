@@ -175,8 +175,17 @@ def _run_daemon(config, interval: int, once: bool = False):
                 print("\n--once flag set, exiting after one cycle.")
                 break
 
-            print(f"\nSleeping {interval}s until next heartbeat...")
-            time.sleep(interval)
+            # Sleep with early wake support for passive notifications (Telegram, Slack, etc.)
+            print(f"\nSleeping {interval}s until next heartbeat (or until external wake signal)...")
+            sleep_start = time.time()
+            while True:
+                elapsed = time.time() - sleep_start
+                if elapsed >= interval:
+                    break  # Normal wake by interval
+                if manager.should_wake_early():
+                    print("⚡ Waking early due to external notification!")
+                    break  # Woken by external signal
+                time.sleep(0.5)  # Check every 500ms for wake signals
     except KeyboardInterrupt:
         print("\nDaemon stopped.")
 

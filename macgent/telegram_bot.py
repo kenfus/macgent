@@ -79,11 +79,28 @@ class TelegramBot:
         )
         self.db.conn.commit()
 
+        # Wake the manager for immediate processing
+        self._wake_manager()
+
         # Send acknowledgment
         await self.send_message(chat_id, f"✓ Task #{task_id} received: {title}\nProcessing...")
 
         logger.info(f"Created task #{task_id} from Telegram message")
         return task_id
+
+    def _wake_manager(self) -> None:
+        """Signal the manager to wake up and process this task immediately."""
+        try:
+            from datetime import datetime, timezone
+            timestamp = datetime.now(timezone.utc).isoformat()
+            self.db.conn.execute(
+                "INSERT OR REPLACE INTO monitor_state (source, last_check, metadata) VALUES (?, ?, ?)",
+                ("_wake_request", timestamp, "Woken by Telegram message")
+            )
+            self.db.conn.commit()
+            logger.info("Manager wake signal sent")
+        except Exception as e:
+            logger.error(f"Failed to send wake signal: {e}")
 
     async def handle_callback_query(self, query: dict) -> None:
         """Handle inline buttons/callbacks from Telegram."""
