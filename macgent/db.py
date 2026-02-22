@@ -187,6 +187,14 @@ class DB:
         )
         self.conn.commit()
 
+    def get_task_recent_activity(self, task_id: int, limit: int = 5) -> list[dict]:
+        """Get recent agent_log entries for a task (for manager progress peeks)."""
+        rows = self.conn.execute(
+            "SELECT * FROM agent_log WHERE task_id = ? ORDER BY created_at DESC LIMIT ?",
+            (task_id, limit),
+        ).fetchall()
+        return [dict(r) for r in reversed(rows)]
+
     def get_log(self, limit: int = 20, role: str | None = None) -> list[dict]:
         if role:
             rows = self.conn.execute(

@@ -148,7 +148,7 @@ class WorkerRole(BaseRole):
         """Execute the task using the existing Agent."""
         from macgent.agent import Agent
 
-        agent = Agent(self.config)
+        agent = Agent(self.config, db=self.db, task_id=task["id"])
         state = agent.run(task["description"])
 
         # Build result summary

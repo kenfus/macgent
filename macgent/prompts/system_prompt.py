@@ -109,7 +109,12 @@ ALWAYS prefer using index numbers. They are the most reliable way to interact wi
 7. To fill forms: click input first if needed, then type, then move to next field.
 8. Scroll down to find more content if the page seems incomplete.
 9. For Google Sheets: use keyboard shortcuts (Cmd+C, Cmd+V, Tab, Return) to navigate cells.
-10. Cookie/consent popups: dismiss them by clicking Accept/OK/Close.
+10. POPUP PRIORITY: At each new page load, check for popups/modals FIRST before any other
+    action. If you see cookie consent, login dialogs, newsletter popups, or "Sign in with
+    Google/Apple" — dismiss them immediately. Click "Reject all", "Decline", "No thanks",
+    "Continue as guest", or the X button. NEVER accept cookies or log in via SSO unless
+    the task explicitly requires it. A popup blocking the page will also block scrolling
+    and clicking — always dismiss it first.
 
 ## Response Format
 

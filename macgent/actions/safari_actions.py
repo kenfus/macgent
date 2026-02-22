@@ -1,6 +1,6 @@
 import time
 import logging
-from macgent.perception.safari import run_osascript, execute_js_in_safari
+from macgent.perception.safari import run_osascript, execute_js_in_safari, wait_for_page_load
 
 logger = logging.getLogger("macgent.actions.safari")
 
@@ -76,7 +76,9 @@ def click_element_by_index(index: int) -> str:
         return 'Clicked [' + {index} + '] ' + el.tagName.toLowerCase() + ': ' + text;
     }})()
     """
-    return execute_js_in_safari(js)
+    result = execute_js_in_safari(js)
+    time.sleep(0.3)  # Brief pause for Safari to process the click
+    return result
 
 
 def click_element(selector: str) -> str:
@@ -215,7 +217,8 @@ def press_key(key: str, modifiers: list[str] | None = None) -> str:
 
 
 def scroll_page(direction: str = "down", amount: int = 500) -> str:
-    """Scroll the page via JavaScript."""
+    """Scroll the page via JavaScript. Waits for page stability first."""
+    wait_for_page_load(timeout=3)  # Ensure page isn't mid-load before scrolling
     if direction == "top":
         execute_js_in_safari("window.scrollTo(0, 0)")
         return "Scrolled to top"

@@ -24,8 +24,10 @@ NAVIGATION_ACTIONS = {"navigate", "go_back", "go_forward", "click", "click_eleme
 
 
 class Agent:
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, db=None, task_id: int | None = None):
         self.config = config
+        self.db = db
+        self.task_id = task_id
         self.reasoning_client = LLMClient(
             config.reasoning_api_base, config.reasoning_api_key,
             config.reasoning_model, config.reasoning_api_type,
@@ -112,6 +114,17 @@ class Agent:
                 print(f"  Error: {e}")
 
             state.steps.append(step)
+
+            # Log step to DB so manager can peek at progress
+            if self.db and self.task_id:
+                outcome = step.action_result or step.action_error or ""
+                self.db.log(
+                    "agent",
+                    f"step_{step_num}:{action.type}",
+                    f"{action.params} -> {outcome}"[:200],
+                    self.task_id,
+                )
+
             time.sleep(self.config.step_delay)
         else:
             state.status = "failed"

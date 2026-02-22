@@ -71,10 +71,13 @@ class ManagerRole(BaseRole):
             print(f"  Manager: created {created} new tasks from notifications")
             self.db.log("manager", "tasks_created", f"Created {created} tasks")
 
-        # 3. Check stale tasks
+        # 3. Peek at active worker progress
+        self._report_active_task_progress()
+
+        # 4. Check stale tasks
         self._check_stale_tasks()
 
-        # 4. Review board health
+        # 5. Review board health
         self._check_board_health()
 
         self.db.log("manager", "tick_done")
@@ -125,6 +128,20 @@ class ManagerRole(BaseRole):
         print(f"  Manager: Created task #{task_id} (P{priority}): {title}")
         self.db.log("manager", "task_created", f"#{task_id}: {title}", task_id)
         return task_id
+
+    def _report_active_task_progress(self):
+        """Peek at recent agent activity for in-progress tasks."""
+        in_progress = self.db.list_tasks(status="in_progress")
+        for task in in_progress:
+            activity = self.db.get_task_recent_activity(task["id"], limit=3)
+            if activity:
+                last = activity[-1]
+                detail = (last["detail"] or "")[:80]
+                print(f"  Manager: Task #{task['id']} active — last: {last['action']} {detail}")
+                self.db.log("manager", "progress_peek",
+                            f"Task #{task['id']}: {last['action']}", task["id"])
+            else:
+                print(f"  Manager: Task #{task['id']} in_progress — no agent steps logged yet")
 
     def _check_stale_tasks(self):
         """Ping Worker about tasks stuck in_progress too long."""
