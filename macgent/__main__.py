@@ -63,10 +63,6 @@ def main():
     soul_p.add_argument("action", choices=["edit", "show"], help="Action")
     soul_p.add_argument("role", choices=["manager", "worker", "stakeholder"], help="Role")
 
-    # macgent telegram — run Telegram bot polling
-    telegram_p = sub.add_parser("telegram", help="Run Telegram bot polling")
-    telegram_p.add_argument("--once", action="store_true", help="Process one batch of messages then exit")
-
     args = parser.parse_args()
 
     if args.command is None:
@@ -99,9 +95,6 @@ def main():
 
     elif args.command == "soul":
         _soul_command(config, args.action, args.role)
-
-    elif args.command == "telegram":
-        _run_telegram(config, once=args.once)
 
 
 def _run_task(config, description: str):
@@ -138,8 +131,13 @@ def _run_task(config, description: str):
 
 
 def _run_daemon(config, interval: int, once: bool = False):
-    """Run the manager heartbeat daemon."""
-    import time
+    """Run the unified manager daemon with Telegram bot integration."""
+    import asyncio
+    asyncio.run(_run_daemon_async(config, interval, once))
+
+
+async def _run_daemon_async(config, interval: int, once: bool):
+    """Async daemon that runs Telegram polling alongside the sync heartbeat loop."""
     from macgent.db import DB
     from macgent.memory import MemoryManager
     from macgent.roles.manager import ManagerRole
@@ -154,6 +152,38 @@ def _run_daemon(config, interval: int, once: bool = False):
     stakeholder = StakeholderRole(config, db, memory)
 
     print(f"macgent daemon started (interval={interval}s, Ctrl+C to stop)")
+
+    # Start Telegram polling if configured
+    telegram_task = None
+    if config.telegram_bot_token:
+        from macgent.telegram_bot import TelegramBot
+        # Telegram bot needs its own DB connection (different thread)
+        tg_db = DB(config.db_path)
+        bot = TelegramBot(config, tg_db)
+        print("✓ Telegram bot enabled — listening on @MacGentBot")
+        telegram_task = asyncio.create_task(bot.run_polling())
+    else:
+        print("(Telegram not configured — set TELEGRAM_BOT_TOKEN to enable)")
+
+    # Run the sync daemon loop in a thread pool
+    loop = asyncio.get_event_loop()
+    try:
+        await loop.run_in_executor(
+            None,
+            _sync_daemon_loop, config, manager, worker, stakeholder, interval, once
+        )
+    finally:
+        if telegram_task:
+            telegram_task.cancel()
+            try:
+                await telegram_task
+            except asyncio.CancelledError:
+                pass
+
+
+def _sync_daemon_loop(config, manager, worker, stakeholder, interval, once):
+    """Synchronous daemon loop (runs in thread pool while Telegram polls in async)."""
+    import time
     cycle = 0
     try:
         while True:
@@ -252,39 +282,6 @@ def _soul_command(config, action: str, role: str):
             mm._ensure_default_souls()
         os.execvp(editor, [editor, str(soul_path)])
 
-
-def _run_telegram(config, once: bool = False):
-    """Run Telegram bot polling."""
-    import asyncio
-    from macgent.db import DB
-    from macgent.telegram_bot import TelegramBot
-
-    if not config.telegram_bot_token:
-        print("ERROR: Set TELEGRAM_BOT_TOKEN in .env file")
-        sys.exit(1)
-
-    db = DB(config.db_path)
-    bot = TelegramBot(config, db)
-
-    if once:
-        # Run one batch of updates then exit
-        async def fetch_once():
-            updates = await bot.get_updates(timeout=5)
-            for update in updates:
-                bot.offset = update["update_id"] + 1
-                if "message" in update:
-                    await bot.process_message(update["message"])
-                elif "callback_query" in update:
-                    await bot.handle_callback_query(update["callback_query"])
-            print(f"Processed {len(updates)} updates")
-
-        asyncio.run(fetch_once())
-    else:
-        # Run continuous polling
-        try:
-            asyncio.run(bot.run_polling())
-        except KeyboardInterrupt:
-            print("\nTelegram bot stopped.")
 
 
 def _print_result(state):

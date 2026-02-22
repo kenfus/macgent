@@ -33,33 +33,35 @@ Or use the Telegram Bot API directly to get updates.
 
 ## Usage
 
-### Option 1: Run Bot in Polling Mode
+### Run the Unified Daemon
+
+The Telegram bot is now **integrated into the daemon** — run one command:
 
 ```bash
-# Continuous polling (Ctrl+C to stop)
-uv run macgent telegram
-
-# Single batch of messages
-uv run macgent telegram --once
-```
-
-### Option 2: Run with Daemon
-
-The telegram polling can run alongside the manager daemon:
-
-```bash
-# In one terminal
+# Start the unified manager daemon (includes Telegram polling)
 uv run macgent daemon
-
-# In another terminal
-uv run macgent telegram
 ```
 
-Both processes share the same database and will coordinate:
-- **Manager** checks for new tasks and manages the board
-- **Worker** executes tasks
-- **Stakeholder** reviews results
-- **Telegram Bot** receives messages and sends notifications
+Expected output:
+```
+macgent daemon started (interval=1800s, Ctrl+C to stop)
+✓ Telegram bot enabled — listening on @MacGentBot
+============================================================
+Heartbeat cycle #1
+  Manager: Checking email...
+  Stakeholder: No tasks in review
+  Worker: No pending tasks
+Sleeping 1800s until next heartbeat (or until external wake signal)...
+```
+
+Now send a message to @MacGentBot on Telegram — the daemon will wake immediately and process it.
+
+### Single Cycle Test
+
+```bash
+# Run one heartbeat cycle, then exit (useful for quick testing)
+uv run macgent daemon --once
+```
 
 ## How It Works
 
@@ -129,37 +131,67 @@ Time 0:30 - Next scheduled heartbeat
 
 ## Example Workflow
 
+The Telegram bot runs inside the daemon — one unified process handles everything:
+
 ```
-You (via Telegram):
-"Check HackerNews top 3 stories and summarize"
-        ↓
-Bot: "✓ Task #5 received: Check HackerNews top 3 stories..."
-        ↓
-Worker executes task (navigates, reads, summarizes)
-        ↓
-Stakeholder reviews result
-        ↓
-Bot: "✅ Task #5
-     Status: completed
-     Result: 1) AI Policy... 2) GPU Makers... 3) Security..."
+Timeline:
+=========
+
+00:00 - Manager daemon starts
+        ✓ Telegram bot enabled — listening on @MacGentBot
+        Heartbeat cycle #1: check email, manage board
+
+00:15 - YOU (via Telegram):
+        "Check HackerNews top 3 stories and summarize"
+
+        Inside daemon:
+        ├─ Async task: Telegram bot receives message
+        ├─ Creates task #1 in database
+        ├─ Wakes the manager (sets _wake_request flag)
+        └─ Sends you: "✓ Task #1 received..."
+
+        Manager (in sync thread):
+        ├─ Detects _wake_request
+        ├─ ⚡ Waking early due to external notification!
+        ├─ Heartbeat cycle #2: Process task #1
+        ├─ Worker: Executing task (navigates, reads, summarizes)
+        ├─ Stakeholder: Reviews and approves
+        └─ Sends you: "✅ Task #1 completed - Results: ..."
+
+00:16 - YOU (via Telegram):
+        Receive: ✅ Task #1
+                 Status: completed
+                 Result: 1) AI Policy... 2) GPU Makers... 3) Security...
 ```
 
 ## Troubleshooting
 
 ### Bot not receiving messages
-- Check that `TELEGRAM_BOT_TOKEN` is correct in `.env`
-- Ensure the polling is running: `uv run macgent telegram`
+- Verify `TELEGRAM_BOT_TOKEN` is set correctly in `.env`
+- Ensure daemon is running: `uv run macgent daemon`
+- Look for "Telegram bot enabled" in the startup output
+- Check you're messaging **@MacGentBot** (not a different bot)
 - Look for error logs with timestamps
 
-### Messages received but tasks not created
-- Check database path: `macgent.db` in `~/.macgent/`
-- Review logs: `uv run macgent log`
-- Check task status: `uv run macgent status`
+### "Telegram not configured" message
+- Set `TELEGRAM_BOT_TOKEN` in `.env`
+- Restart the daemon: `uv run macgent daemon`
 
-### Notifications not sent back
-- Verify `telegram_bot.py` can import (check for syntax errors)
-- Ensure chat_id is stored in the task's `review_note` field
-- Check error logs for Telegram API failures
+### Messages received but tasks not created
+- Check daemon logs for errors
+- Review task status: `uv run macgent status`
+- View logs: `uv run macgent log -n 50`
+- Check database path: `~/.macgent/macgent.db`
+
+### Daemon not waking when message arrives
+- Verify chat_id is in task metadata (stored in `review_note`)
+- Check that Manager's `should_wake_early()` is being called
+- Look for "Waking early" in daemon output
+
+### Notifications not sent back to Telegram
+- Ensure Worker has the chat_id metadata from the task
+- Check Telegram API key is correct
+- Review error logs for Telegram API failures
 
 ## Limitations
 
