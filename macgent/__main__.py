@@ -140,17 +140,7 @@ async def _run_daemon_async(config, interval: int, once: bool):
     """Async daemon that runs Telegram polling alongside the sync heartbeat loop."""
     import asyncio
     from macgent.db import DB
-    from macgent.memory import MemoryManager
-    from macgent.roles.manager import ManagerRole
-    from macgent.roles.worker import WorkerRole
-    from macgent.roles.stakeholder import StakeholderRole
 
-    db = DB(config.db_path)
-    memory = MemoryManager(config)
-
-    manager = ManagerRole(config, db, memory)
-    worker = WorkerRole(config, db, memory)
-    stakeholder = StakeholderRole(config, db, memory)
 
     print(f"macgent daemon started (interval={interval}s, Ctrl+C to stop)")
 
@@ -167,11 +157,12 @@ async def _run_daemon_async(config, interval: int, once: bool):
         print("(Telegram not configured — set TELEGRAM_BOT_TOKEN to enable)")
 
     # Run the sync daemon loop in a thread pool
+    # Note: DB objects must be created in the executor thread, not passed from main thread
     loop = asyncio.get_event_loop()
     try:
         await loop.run_in_executor(
             None,
-            _sync_daemon_loop, config, manager, worker, stakeholder, interval, once
+            _sync_daemon_loop, config, interval, once
         )
     finally:
         if telegram_task:
@@ -182,9 +173,23 @@ async def _run_daemon_async(config, interval: int, once: bool):
                 pass
 
 
-def _sync_daemon_loop(config, manager, worker, stakeholder, interval, once):
+def _sync_daemon_loop(config, interval, once):
     """Synchronous daemon loop (runs in thread pool while Telegram polls in async)."""
     import time
+    from macgent.db import DB
+    from macgent.memory import MemoryManager
+    from macgent.roles.manager import ManagerRole
+    from macgent.roles.worker import WorkerRole
+    from macgent.roles.stakeholder import StakeholderRole
+
+    # Create DB connection in this thread (SQLite connections are thread-specific)
+    db = DB(config.db_path)
+    memory = MemoryManager(config)
+
+    manager = ManagerRole(config, db, memory)
+    worker = WorkerRole(config, db, memory)
+    stakeholder = StakeholderRole(config, db, memory)
+
     cycle = 0
     try:
         while True:
