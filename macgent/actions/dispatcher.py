@@ -16,27 +16,53 @@ def dispatch(action: Action) -> str:
         if t == "navigate":
             return safari_actions.navigate(p["url"])
 
-        elif t == "execute_js":
-            return execute_js_in_safari(p["code"])
+        elif t == "go_back":
+            return safari_actions.go_back()
 
-        elif t == "click_element":
-            if "selector" in p:
+        elif t == "go_forward":
+            return safari_actions.go_forward()
+
+        elif t == "click":
+            if "index" in p:
+                return safari_actions.click_element_by_index(int(p["index"]))
+            elif "selector" in p:
                 return safari_actions.click_element(p["selector"])
             elif "text" in p:
                 return safari_actions.click_element_by_text(p["text"], p.get("tag", "*"))
             else:
-                return "ERROR: click_element needs 'selector' or 'text'"
+                return "ERROR: click needs 'index', 'selector', or 'text'"
 
-        elif t == "type_text":
-            if "selector" in p:
+        elif t == "click_element":
+            if "index" in p:
+                return safari_actions.click_element_by_index(int(p["index"]))
+            elif "selector" in p:
+                return safari_actions.click_element(p["selector"])
+            elif "text" in p:
+                return safari_actions.click_element_by_text(p["text"], p.get("tag", "*"))
+            else:
+                return "ERROR: click_element needs 'index', 'selector', or 'text'"
+
+        elif t == "type":
+            if "index" in p:
+                return safari_actions.type_text_by_index(int(p["index"]), p["text"])
+            elif "selector" in p:
                 return safari_actions.type_text(p["selector"], p["text"])
             else:
                 return safari_actions.type_text_by_keystroke(p["text"])
 
+        elif t == "type_text":
+            if "index" in p:
+                return safari_actions.type_text_by_index(int(p["index"]), p["text"])
+            elif "selector" in p:
+                return safari_actions.type_text(p["selector"], p["text"])
+            else:
+                return safari_actions.type_text_by_keystroke(p["text"])
+
+        elif t == "select_option":
+            return safari_actions.select_option_by_index(int(p["index"]), p["value"])
+
         elif t == "key_press":
-            key = p["key"]
-            modifiers = p.get("modifiers")
-            return safari_actions.press_key(key, modifiers)
+            return safari_actions.press_key(p["key"], p.get("modifiers"))
 
         elif t == "mouse_click":
             return mouse.mouse_click(int(p["x"]), int(p["y"]))
@@ -44,8 +70,20 @@ def dispatch(action: Action) -> str:
         elif t == "scroll":
             return safari_actions.scroll_page(
                 p.get("direction", "down"),
-                int(p.get("amount", 300)),
+                int(p.get("amount", 500)),
             )
+
+        elif t == "execute_js":
+            return execute_js_in_safari(p["code"])
+
+        elif t == "new_tab":
+            return safari_actions.new_tab(p.get("url", ""))
+
+        elif t == "close_tab":
+            return safari_actions.close_tab()
+
+        elif t == "switch_tab":
+            return safari_actions.switch_tab(int(p["tab"]))
 
         elif t == "open_app":
             app = p["app"]
@@ -63,6 +101,50 @@ def dispatch(action: Action) -> str:
                 minute=int(p.get("minute", 0)),
                 duration_hours=int(p.get("duration_hours", 1)),
                 calendar_name=p.get("calendar"),
+            )
+
+        elif t == "calendar_read":
+            return calendar_actions.read_events(
+                year=int(p["year"]),
+                month=int(p["month"]),
+                day=int(p["day"]),
+            )
+
+        elif t == "imessage_read":
+            from macgent.actions import imessage_actions
+            return imessage_actions.read_messages(
+                contact=p.get("contact", ""),
+                limit=int(p.get("limit", 10)),
+            )
+
+        elif t == "imessage_send":
+            from macgent.actions import imessage_actions
+            return imessage_actions.send_message(
+                contact=p["contact"],
+                text=p["text"],
+            )
+
+        elif t == "mail_read":
+            from macgent.actions import mail_actions
+            return mail_actions.read_inbox(limit=int(p.get("limit", 5)))
+
+        elif t == "mail_read_full":
+            from macgent.actions import mail_actions
+            return mail_actions.read_email(message_number=int(p.get("number", 1)))
+
+        elif t == "mail_send":
+            from macgent.actions import mail_actions
+            return mail_actions.send_email(
+                to=p["to"],
+                subject=p["subject"],
+                body=p["body"],
+            )
+
+        elif t == "mail_reply":
+            from macgent.actions import mail_actions
+            return mail_actions.reply_email(
+                message_number=int(p["number"]),
+                body=p["body"],
             )
 
         elif t == "wait":

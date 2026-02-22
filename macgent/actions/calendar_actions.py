@@ -3,7 +3,6 @@ from macgent.perception.safari import run_osascript
 
 logger = logging.getLogger("macgent.actions.calendar")
 
-# Auto-detect default calendar on first use
 _default_calendar = None
 
 
@@ -13,7 +12,6 @@ def _get_default_calendar() -> str:
     if _default_calendar:
         return _default_calendar
     cals = list_calendars()
-    # Pick first non-system calendar
     system_cals = {"Birthdays", "Siri Suggestions", "Scheduled Reminders"}
     for name in cals.split(", "):
         name = name.strip()
@@ -27,22 +25,13 @@ def add_event(summary: str, year: int, month: int, day: int,
               hour: int = 12, minute: int = 0,
               duration_hours: int = 1,
               calendar_name: str | None = None) -> str:
-    """Add an event to macOS Calendar using numeric date parts (locale-safe).
-
-    Args:
-        summary: Event title
-        year, month, day: Date components
-        hour, minute: Start time (24h format)
-        duration_hours: Event duration in hours
-        calendar_name: Calendar to use (auto-detected if None)
-    """
+    """Add an event to macOS Calendar."""
     if not calendar_name:
         calendar_name = _get_default_calendar()
 
     escaped_summary = summary.replace('"', '\\"')
     escaped_cal = calendar_name.replace('"', '\\"')
 
-    # Build date programmatically in AppleScript (locale-independent)
     script = f'''
     tell application "Calendar"
         set startDate to current date
@@ -62,7 +51,46 @@ def add_event(summary: str, year: int, month: int, day: int,
     end tell
     '''
     run_osascript(script)
-    return f"Added calendar event: '{summary}' on {year}-{month:02d}-{day:02d} at {hour:02d}:{minute:02d} to calendar '{calendar_name}'"
+    return f"Added event: '{summary}' on {year}-{month:02d}-{day:02d} at {hour:02d}:{minute:02d}"
+
+
+def read_events(year: int, month: int, day: int) -> str:
+    """Read all calendar events for a specific date."""
+    script = f'''
+    tell application "Calendar"
+        set startDate to current date
+        set year of startDate to {year}
+        set month of startDate to {month}
+        set day of startDate to {day}
+        set hours of startDate to 0
+        set minutes of startDate to 0
+        set seconds of startDate to 0
+
+        set endDate to startDate + (24 * 60 * 60)
+
+        set output to ""
+        repeat with cal in calendars
+            set calName to name of cal
+            try
+                set dayEvents to (every event of cal whose start date >= startDate and start date < endDate)
+                repeat with ev in dayEvents
+                    set evStart to start date of ev
+                    set h to hours of evStart
+                    set m to minutes of evStart
+                    set timeStr to (h as text) & ":" & (text -2 thru -1 of ("0" & (m as text)))
+                    set output to output & timeStr & " - " & summary of ev & " [" & calName & "]" & linefeed
+                end repeat
+            end try
+        end repeat
+
+        if output is "" then
+            return "No events on {year}-{month:02d}-{day:02d}"
+        else
+            return output
+        end if
+    end tell
+    '''
+    return run_osascript(script, timeout=15)
 
 
 def list_calendars() -> str:
@@ -78,9 +106,3 @@ def list_calendars() -> str:
     end tell
     '''
     return run_osascript(script)
-
-
-def open_calendar() -> str:
-    """Open the Calendar app."""
-    run_osascript('tell application "Calendar" to activate')
-    return "Opened Calendar app"

@@ -4,7 +4,8 @@ from macgent.config import Config
 from macgent.models import AgentState, Step, Observation, Action
 from macgent.perception.safari import (
     get_safari_url, get_safari_title, get_page_text,
-    get_page_interactive_elements, wait_for_page_load,
+    get_page_interactive_elements, get_page_structure,
+    wait_for_page_load,
 )
 from macgent.perception.screenshot import (
     take_safari_window_screenshot, resize_screenshot, screenshot_to_base64,
@@ -16,8 +17,10 @@ from macgent.actions.dispatcher import dispatch
 
 logger = logging.getLogger("macgent")
 
-# Domains where we always use screenshots (heavy SPAs)
 SPA_DOMAINS = ["notion.so", "notion.com", "booking.com", "app.notion.so"]
+
+# Actions that trigger page loads
+NAVIGATION_ACTIONS = {"navigate", "go_back", "go_forward", "click", "click_element", "new_tab", "switch_tab"}
 
 
 class Agent:
@@ -39,15 +42,21 @@ class Agent:
 
         print(f"\n{'='*60}")
         print(f"Task: {task}")
-        print(f"Reasoning: {self.config.reasoning_model} ({self.config.reasoning_api_type})")
+        print(f"Model: {self.config.reasoning_model}")
         if self.vision_client:
-            print(f"Vision: {self.config.vision_model} ({self.config.vision_api_type})")
-        else:
-            print("Vision: disabled")
+            print(f"Vision: {self.config.vision_model}")
         print(f"{'='*60}\n")
 
+        last_action_type = None
+        stuck_count = 0
+
         for step_num in range(1, state.max_steps + 1):
-            print(f"--- Step {step_num} ---")
+            print(f"\n--- Step {step_num}/{state.max_steps} ---")
+
+            # Wait for page load after navigation actions
+            if state.steps and state.steps[-1].action.type in NAVIGATION_ACTIONS:
+                wait_for_page_load(timeout=5)
+                time.sleep(0.5)
 
             # 1. OBSERVE
             last_action_str = ""
@@ -61,8 +70,20 @@ class Agent:
 
             # 2. THINK
             action = self._think(task, observation, state.steps)
-            print(f"  Reasoning: {action.reasoning[:120]}...")
+            print(f"  Think: {action.reasoning[:120]}")
             print(f"  Action: {action.type} {action.params}")
+
+            # Stuck detection
+            if action.type == last_action_type and action.type == "wait":
+                stuck_count += 1
+            else:
+                stuck_count = 0
+            last_action_type = action.type
+
+            if stuck_count >= 3:
+                print("  [!] Stuck in wait loop, scrolling")
+                action = Action(type="scroll", params={"direction": "down", "amount": 500},
+                                reasoning="Stuck - scrolling to discover more")
 
             # 3. Record step
             step = Step(step_number=step_num, observation=observation, action=action)
@@ -85,7 +106,7 @@ class Agent:
             try:
                 result = dispatch(action)
                 step.action_result = result
-                print(f"  Result: {result[:100]}")
+                print(f"  Result: {result[:120]}")
             except Exception as e:
                 step.action_error = str(e)
                 print(f"  Error: {e}")
@@ -101,24 +122,35 @@ class Agent:
     def _observe(self, task: str, last_action: str = "") -> Observation:
         obs = Observation()
 
-        # Always try Safari state
         try:
             obs.url = get_safari_url()
             obs.page_title = get_safari_title()
         except Exception as e:
-            # Safari might not be open - that's ok for non-browser tasks
             obs.error = f"Safari not accessible: {e}"
             return obs
 
-        # Get page text + interactive elements
+        # Page structure + text + elements
         try:
+            structure = get_page_structure()
             page_text = get_page_text(self.config.page_text_max_chars)
             elements = get_page_interactive_elements()
-            obs.page_text = f"PAGE TEXT:\n{page_text}\n\nINTERACTIVE ELEMENTS:\n{elements}"
-        except Exception as e:
-            obs.page_text = f"(page text extraction failed: {e})"
 
-        # Vision: screenshot + description for SPAs or sparse pages
+            parts = []
+            if structure:
+                parts.append(structure)
+            if page_text:
+                text_budget = self.config.page_text_max_chars
+                if len(page_text) > text_budget:
+                    page_text = page_text[:text_budget] + "..."
+                parts.append(f"\nPAGE TEXT:\n{page_text}")
+            if elements:
+                parts.append(f"\nELEMENTS:\n{elements}")
+
+            obs.page_text = "\n".join(parts)
+        except Exception as e:
+            obs.page_text = f"(page extraction failed: {e})"
+
+        # Vision for SPAs or sparse pages
         is_spa = any(d in (obs.url or "") for d in SPA_DOMAINS)
         text_sparse = len(obs.page_text or "") < 200
 

@@ -1,5 +1,4 @@
 import sys
-import os
 import logging
 
 
@@ -9,7 +8,6 @@ def main():
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     )
 
-    # Load .env
     from dotenv import load_dotenv
     load_dotenv()
 
@@ -18,16 +16,23 @@ def main():
 
     if not config.reasoning_api_key:
         print("ERROR: Set REASONING_API_KEY in .env file")
-        print("  cp .env.example .env  # then edit with your keys")
         sys.exit(1)
 
-    # Get task from args
     if len(sys.argv) < 2:
-        print("Usage: python -m macgent 'Your task here'")
+        print("Usage: uv run macgent 'your task here'")
         print()
-        print("Examples:")
-        print("  python -m macgent 'Go to example.com and tell me what links are on the page'")
-        print("  python -m macgent 'Open Calendar and add event for Sunday: it works omg!'")
+        print("Browser examples:")
+        print("  uv run macgent 'Go to news.ycombinator.com and tell me the top 5 stories'")
+        print("  uv run macgent 'Search Google for Python tutorials and list the first 3 results'")
+        print("  uv run macgent 'Go to booking.com, search for hotels in Basel near Novartis Campus'")
+        print("  uv run macgent 'Open Google Sheets and create a new spreadsheet with hotel data'")
+        print()
+        print("macOS examples:")
+        print("  uv run macgent 'What events do I have on February 27th?'")
+        print("  uv run macgent 'Add a meeting to my calendar for March 1st at 2pm'")
+        print("  uv run macgent 'Read my recent emails and summarize them'")
+        print("  uv run macgent 'Send a test email to test@example.com'")
+        print("  uv run macgent 'Read my iMessages and tell me what is new'")
         sys.exit(1)
 
     task = " ".join(sys.argv[1:])
@@ -36,7 +41,6 @@ def main():
     agent = Agent(config)
     state = agent.run(task)
 
-    # Summary
     print(f"\n{'='*60}")
     print(f"Task: {state.task}")
     print(f"Status: {state.status}")
