@@ -13,34 +13,37 @@ logger = logging.getLogger("macgent.actions.notion")
 NOTION_API = "https://api.notion.com/v1"
 NOTION_VERSION = "2022-06-28"
 
-# Required database properties and their types
-REQUIRED_PROPERTIES = {
-    "Status": {
-        "select": {
-            "options": [
-                {"name": "Inbox", "color": "gray"},
-                {"name": "Ready", "color": "blue"},
-                {"name": "In Progress", "color": "yellow"},
-                {"name": "Done", "color": "green"},
-                {"name": "Blocked", "color": "red"},
-            ]
-        }
-    },
-    "Priority": {
-        "select": {
-            "options": [
-                {"name": "P1", "color": "red"},
-                {"name": "P2", "color": "orange"},
-                {"name": "P3", "color": "yellow"},
-                {"name": "P4", "color": "gray"},
-            ]
-        }
-    },
+# Properties we need to ensure exist (won't touch existing ones like Status, Priority, Task Name).
+REQUIRED_EXTRA_PROPERTIES = {
     "Description": {"rich_text": {}},
     "Source": {"rich_text": {}},
     "MacgentID": {"number": {"format": "number"}},
     "Notes": {"rich_text": {}},
 }
+
+# Detected at runtime by ensure_schema().
+# "status" = Notion built-in, "select" = custom select.
+_status_prop_type = "status"
+
+# Map our internal status names → actual Notion option names.
+# Adapt if the Notion board uses different labels.
+STATUS_MAP = {
+    "Inbox": "Backlog",
+    "Ready": "Ready to be worked on",
+    "In Progress": "In Progress",
+    "Done": "Complete",
+    "Blocked": "Blocked",
+}
+# Reverse map: Notion option name → our internal name.
+STATUS_REVERSE = {v: k for k, v in STATUS_MAP.items()}
+
+# Map our internal priority (int) → Notion option names.
+PRIORITY_MAP = {1: "Critical", 2: "High", 3: "Medium", 4: "Low"}
+# Reverse: Notion name → our internal name (kept as-is for display).
+PRIORITY_REVERSE = {"Critical": "P1", "High": "P2", "Medium": "P3", "Low": "P4"}
+
+# Title property name in Notion (may be "Name" or "Task Name" etc.)
+_title_prop = "Task Name"
 
 
 def _headers(token: str) -> dict:
@@ -54,10 +57,21 @@ def _headers(token: str) -> dict:
 def _parse_page(page: dict) -> dict:
     """Parse a Notion page into a flat task dict."""
     props = page.get("properties", {})
-    title_parts = props.get("Name", {}).get("title", [])
+
+    # Title — try detected property name, fall back to "Name"
+    title_parts = props.get(_title_prop, props.get("Name", {})).get("title", [])
     title = "".join(t.get("plain_text", "") for t in title_parts)
-    page_status = (props.get("Status", {}).get("select") or {}).get("name", "")
-    priority = (props.get("Priority", {}).get("select") or {}).get("name", "")
+
+    # Status — handle both "status" (built-in) and "select" types
+    status_prop = props.get("Status", {})
+    status_type = status_prop.get("type", _status_prop_type)
+    raw_status = (status_prop.get(status_type) or {}).get("name", "")
+    page_status = STATUS_REVERSE.get(raw_status, raw_status)
+
+    # Priority
+    raw_priority = (props.get("Priority", {}).get("select") or {}).get("name", "")
+    priority = PRIORITY_REVERSE.get(raw_priority, raw_priority)
+
     macgent_id = props.get("MacgentID", {}).get("number")
     desc_parts = props.get("Description", {}).get("rich_text", [])
     description = "".join(t.get("plain_text", "") for t in desc_parts)
@@ -83,7 +97,8 @@ def _parse_page(page: dict) -> dict:
 
 
 def ensure_schema(token: str, database_id: str) -> bool:
-    """Ensure the Notion database has all required properties. Creates missing ones."""
+    """Ensure the Notion database has required extra properties. Detects existing schema."""
+    global _status_prop_type, _title_prop
     if not token or not database_id:
         logger.warning("Notion token or database_id not configured, skipping schema check")
         return False
@@ -99,7 +114,22 @@ def ensure_schema(token: str, database_id: str) -> bool:
         existing = resp.json().get("properties", {})
         existing_names = set(existing.keys())
 
-        missing = {k: v for k, v in REQUIRED_PROPERTIES.items() if k not in existing_names}
+        # Detect Status property type (Notion built-in "status" vs custom "select")
+        if "Status" in existing:
+            detected = existing["Status"].get("type", "select")
+            _status_prop_type = detected
+            logger.info(f"Notion Status property type: {detected}")
+
+        # Detect title property name (could be "Name", "Task Name", etc.)
+        for name, prop in existing.items():
+            if prop.get("type") == "title":
+                _title_prop = name
+                logger.info(f"Notion title property: '{name}'")
+                break
+
+        # Only add missing extra properties (Description, Source, Notes, MacgentID)
+        missing = {k: v for k, v in REQUIRED_EXTRA_PROPERTIES.items()
+                   if k not in existing_names}
         if not missing:
             logger.info("Notion database schema is up to date")
             return True
@@ -135,12 +165,12 @@ def create_task(
         logger.warning("Notion not configured, skipping create_task")
         return None
 
-    priority_map = {1: "P1", 2: "P2", 3: "P3", 4: "P4"}
-    priority_label = priority_map.get(priority, "P3")
+    priority_label = PRIORITY_MAP.get(priority, "Medium")
+    notion_status = STATUS_MAP.get(status, status)
 
     properties: dict = {
-        "Name": {"title": [{"text": {"content": title[:100]}}]},
-        "Status": {"select": {"name": status}},
+        _title_prop: {"title": [{"text": {"content": title[:100]}}]},
+        "Status": {_status_prop_type: {"name": notion_status}},
         "Priority": {"select": {"name": priority_label}},
     }
     if description:
@@ -184,7 +214,8 @@ def update_task(
 
     properties: dict = {}
     if status:
-        properties["Status"] = {"select": {"name": status}}
+        notion_status = STATUS_MAP.get(status, status)
+        properties["Status"] = {_status_prop_type: {"name": notion_status}}
     if note:
         properties["Notes"] = {
             "rich_text": [{"text": {"content": note[:2000]}}]
@@ -219,9 +250,10 @@ def list_tasks(
 
     body: dict = {"page_size": 50}
     if status:
+        notion_status = STATUS_MAP.get(status, status)
         body["filter"] = {
             "property": "Status",
-            "select": {"equals": status},
+            _status_prop_type: {"equals": notion_status},
         }
 
     try:
@@ -231,7 +263,9 @@ def list_tasks(
             json=body,
             timeout=10,
         )
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            logger.error(f"Notion query failed ({resp.status_code}): {resp.text[:500]}")
+            return []
         results = resp.json().get("results", [])
 
         tasks = []
@@ -277,10 +311,11 @@ def get_stale_tasks(token: str, database_id: str, minutes: int = 60) -> list[dic
         return []
 
     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+    notion_status = STATUS_MAP.get("In Progress", "In Progress")
     body = {
         "filter": {
             "and": [
-                {"property": "Status", "select": {"equals": "In Progress"}},
+                {"property": "Status", _status_prop_type: {"equals": notion_status}},
                 {"timestamp": "last_edited_time", "last_edited_time": {"before": cutoff}},
             ]
         },
@@ -294,7 +329,9 @@ def get_stale_tasks(token: str, database_id: str, minutes: int = 60) -> list[dic
             json=body,
             timeout=10,
         )
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            logger.error(f"Notion stale query failed ({resp.status_code}): {resp.text[:500]}")
+            return []
         results = resp.json().get("results", [])
         return [_parse_page(page) for page in results]
     except Exception as e:
