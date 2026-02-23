@@ -197,3 +197,20 @@ def sync_notify_task_update(config: Config, db: DB, task_id: int) -> None:
         asyncio.run(notify_task_update(config, db, task_id))
     except Exception as e:
         logger.error(f"Failed to notify task update: {e}")
+
+
+async def _send_text(config: Config, text: str) -> None:
+    """Send a plain text message to the configured chat."""
+    if not config.telegram_bot_token or not config.telegram_chat_id:
+        return
+    url = f"https://api.telegram.org/bot{config.telegram_bot_token}/sendMessage"
+    async with httpx.AsyncClient(timeout=10) as client:
+        await client.post(url, json={"chat_id": config.telegram_chat_id, "text": text, "parse_mode": "Markdown"})
+
+
+def sync_send_message(config: Config, text: str) -> None:
+    """Synchronous helper to send a plain text Telegram message."""
+    try:
+        asyncio.run(_send_text(config, text))
+    except Exception as e:
+        logger.debug(f"sync_send_message failed: {e}")

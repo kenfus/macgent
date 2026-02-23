@@ -1,5 +1,6 @@
-"""Memory system: Soul files + short-term (SQLite) + long-term (FAISS + fastembed)."""
+"""Memory system: Soul files + short-term (SQLite) + long-term (FAISS + fastembed) + daily logs."""
 
+import datetime
 import logging
 import numpy as np
 from pathlib import Path
@@ -68,10 +69,11 @@ When you see a popup, overlay, or dialog, handle it BEFORE doing anything else o
 - Only accept cookies if the task explicitly says to
 
 ### Login / Sign-In Popups
-- DEFAULT: DISMISS login prompts (click X, "Close", "No thanks", "Continue as guest")
+- DEFAULT: DISMISS login prompts (click X, "Close", "No thanks", "Continue as guest", "Skip for now", "No, thank you", etc.)
 - Do NOT log in with Google, Apple, Facebook, or any SSO unless the task explicitly says to
 - Do NOT create accounts unless explicitly asked
 - For booking/shopping sites: prefer "Continue as guest" or close the dialog
+- UNLESS the task requires it, avoid logging in to prevent 2FA roadblocks and security issues.
 
 ### Newsletter / Marketing Popups
 - Always dismiss immediately (click X or "No thanks")
@@ -83,35 +85,6 @@ Look for: modal overlays, "Sign in with Google", "Accept cookies", "Subscribe no
 ## Output Format
 When submitting results, provide a clear summary of what was done and what was found.
 """,
-
-    "stakeholder": """# Stakeholder Soul
-
-You are the Stakeholder agent. You review task quality and ensure work meets standards.
-
-## Review Process
-1. When Worker sends a plan (clarification phase): review for completeness, ask questions if unclear
-2. When Worker submits a result (review phase): evaluate quality and completeness
-3. Approve if the work meets the task requirements
-4. Reject with specific feedback if improvements are needed
-5. Escalate to CEO if the task is ambiguous or beyond Worker's capabilities
-
-## Quality Criteria
-- Does the result actually address what was asked?
-- Is the information accurate and complete?
-- Is the output clear and well-organized?
-- Were there any errors or missed steps?
-
-## When to Escalate
-- Task is ambiguous and you can't determine the right approach
-- Worker has failed 3 times on the same task
-- Task requires human judgment or decisions (e.g., approving a purchase)
-- Security or privacy concerns
-
-## Response Format
-Always respond with JSON:
-- Clarification phase: {"approved": true/false, "feedback": "..."}
-- Review phase: {"approved": true/false, "note": "...", "escalate": false}
-""",
 }
 
 
@@ -120,6 +93,8 @@ class MemoryManager:
         self.config = config
         self.souls_dir = Path(config.souls_dir)
         self.faiss_path = config.faiss_path
+        self.memories_dir = Path(config.memories_dir)
+        self.memories_dir.mkdir(parents=True, exist_ok=True)
 
         self._embedder = None
         self._index = None
@@ -288,3 +263,39 @@ class MemoryManager:
                     parts.append(f"- [{m['category']}] {m['content']}")
 
         return "\n".join(parts)
+
+    # ── Daily Memory Logs ──
+
+    def write_daily_log(self, db, content: str, role: str = "manager"):
+        """Append a timestamped entry to today's memory file and embed it."""
+        today = datetime.date.today().isoformat()
+        path = self.memories_dir / f"memory-{today}.md"
+        now = datetime.datetime.now().strftime("%H:%M")
+
+        if not path.exists():
+            path.write_text(f"# Memory Log — {today}\n")
+
+        entry = f"\n## {now}\n{content}\n"
+        with open(path, "a") as f:
+            f.write(entry)
+
+        # Embed for semantic recall
+        self.remember(db, role, content, category="daily_log")
+        logger.debug(f"Wrote daily log entry for {today}")
+
+    def get_today_memory(self) -> str:
+        """Return today's memory file content, or empty string if none yet."""
+        today = datetime.date.today().isoformat()
+        path = self.memories_dir / f"memory-{today}.md"
+        return path.read_text() if path.exists() else ""
+
+    def embed_past_logs(self, db, days: int = 7):
+        """Embed recent daily log files into FAISS (call once on startup)."""
+        for i in range(days):
+            day = (datetime.date.today() - datetime.timedelta(days=i)).isoformat()
+            path = self.memories_dir / f"memory-{day}.md"
+            if path.exists():
+                content = path.read_text().strip()
+                if content:
+                    self.remember(db, "manager", content, category="daily_log")
+        logger.info(f"Embedded past {days} days of memory logs")

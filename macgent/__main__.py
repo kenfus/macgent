@@ -37,8 +37,8 @@ def main():
     parser = argparse.ArgumentParser(prog="macgent", description="macOS automation multi-agent system")
     sub = parser.add_subparsers(dest="command")
 
-    # macgent task 'do X' — direct CEO task with stakeholder review
-    task_p = sub.add_parser("task", help="Create and run a task (with stakeholder review)")
+    # macgent task 'do X' — direct CEO task
+    task_p = sub.add_parser("task", help="Create and run a task via Manager + Worker")
     task_p.add_argument("description", nargs="+", help="Task description")
 
     # macgent daemon — start heartbeat loop
@@ -61,7 +61,7 @@ def main():
     # macgent soul edit <role> — open soul file in editor
     soul_p = sub.add_parser("soul", help="View or edit soul files")
     soul_p.add_argument("action", choices=["edit", "show"], help="Action")
-    soul_p.add_argument("role", choices=["manager", "worker", "stakeholder"], help="Role")
+    soul_p.add_argument("role", choices=["manager", "worker"], help="Role")
 
     args = parser.parse_args()
 
@@ -98,36 +98,34 @@ def main():
 
 
 def _run_task(config, description: str):
-    """Create a CEO task and run it through Worker + Stakeholder review."""
+    """Create a CEO task and run it through the Worker."""
     from macgent.db import DB
     from macgent.memory import MemoryManager
+    from macgent.roles.manager import ManagerRole
     from macgent.roles.worker import WorkerRole
-    from macgent.roles.stakeholder import StakeholderRole
 
     db = DB(config.db_path)
     memory = MemoryManager(config)
 
-    task_id = db.create_task(
-        title=description[:80],
-        description=description,
-        source="ceo",
-        priority=2,
-    )
+    # Route through manager to get Notion integration + clarification
+    manager = ManagerRole(config, db, memory)
+    task_id = manager.handle_new_ceo_task(description)
     print(f"Created task #{task_id}: {description}")
 
-    worker = WorkerRole(config, db, memory)
-    stakeholder = StakeholderRole(config, db, memory)
+    # If task needs clarification, stop here (manager will handle via heartbeat)
+    task = db.get_task(task_id)
+    if task and task["status"] == "clarifying":
+        print("Task requires CEO clarification — check Telegram.")
+        return
 
-    # Worker claims and executes with stakeholder ping-pong
+    # Otherwise run immediately
+    worker = WorkerRole(config, db, memory)
     worker.run_task(task_id)
 
-    # Show final state
     task = db.get_task(task_id)
     print(f"\nFinal status: {task['status']}")
     if task.get("result"):
         print(f"Result: {task['result']}")
-    if task.get("review_note"):
-        print(f"Review: {task['review_note']}")
 
 
 def _run_daemon(config, interval: int, once: bool = False):
@@ -180,15 +178,20 @@ def _sync_daemon_loop(config, interval, once):
     from macgent.memory import MemoryManager
     from macgent.roles.manager import ManagerRole
     from macgent.roles.worker import WorkerRole
-    from macgent.roles.stakeholder import StakeholderRole
 
     # Create DB connection in this thread (SQLite connections are thread-specific)
     db = DB(config.db_path)
     memory = MemoryManager(config)
 
+    # Embed recent daily memory logs on startup
+    try:
+        memory.embed_past_logs(db, days=7)
+    except Exception as e:
+        import logging
+        logging.getLogger("macgent").warning(f"embed_past_logs failed: {e}")
+
     manager = ManagerRole(config, db, memory)
     worker = WorkerRole(config, db, memory)
-    stakeholder = StakeholderRole(config, db, memory)
 
     cycle = 0
     try:
@@ -198,13 +201,10 @@ def _sync_daemon_loop(config, interval, once):
             print(f"Heartbeat cycle #{cycle}")
             print(f"{'='*60}")
 
-            # 1. Manager checks notifications and manages board
+            # 1. Manager checks notifications, email, Notion board
             manager.tick()
 
-            # 2. Stakeholder reviews any tasks in "review" status
-            stakeholder.tick()
-
-            # 3. Worker picks and executes pending tasks
+            # 2. Worker picks and executes pending tasks
             worker.tick()
 
             if once:

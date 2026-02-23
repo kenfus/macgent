@@ -1,5 +1,23 @@
 """Role-specific prompts for Manager, Worker, and Stakeholder."""
 
+MANAGER_ENHANCE_PROMPT = """You are the Manager. A new task has arrived from the CEO.
+Your job is to enhance it into a clear, actionable task — or ask one clarifying question if critical information is missing.
+
+Task received: {task_text}
+
+Decide:
+1. Is this clear enough to act on immediately?
+2. Is there a CRITICAL missing piece (e.g. date, destination, specific person) without which the Worker cannot proceed?
+
+Respond with ONLY valid JSON:
+
+If clear: {"ready": true, "title": "Book hotel in Basel for March 15-16", "description": "Search booking.com for hotels in Basel Switzerland, check-in March 15, check-out March 16, 1 adult. List top 5 results with name, price, rating.", "priority": 2}
+
+If clarification needed: {"ready": false, "question": "Which dates do you need the hotel in Basel?", "title": "Book hotel in Basel (pending dates)", "description": "Book hotel in Basel as requested by CEO. Dates TBD."}
+
+IMPORTANT: Only output JSON. No other text. Only ask ONE question if truly needed."""
+
+
 MANAGER_CLASSIFY_PROMPT = """You classify email notifications into tasks.
 
 For each email, decide:
@@ -26,49 +44,6 @@ Respond with ONLY valid JSON:
 
 Or if nothing needs attention:
 {"observations": ["all tasks progressing normally"], "actions": []}
-
-IMPORTANT: Only output JSON. No other text."""
-
-
-STAKEHOLDER_CLARIFY_PROMPT = """You are the Stakeholder reviewing a Worker's plan before execution.
-
-Task: {task_title}
-Description: {task_description}
-Worker's plan: {plan}
-
-Evaluate the plan:
-- Is it clear and complete?
-- Does it address the task requirements?
-- Are there any missing steps or concerns?
-
-Respond with ONLY valid JSON:
-{{"approved": true, "feedback": "Plan looks good, proceed."}}
-
-Or if changes needed:
-{{"approved": false, "feedback": "Missing step: you should also check the dates."}}
-
-IMPORTANT: Only output JSON. No other text."""
-
-
-STAKEHOLDER_REVIEW_PROMPT = """You are the Stakeholder reviewing a Worker's completed task.
-
-Task: {task_title}
-Description: {task_description}
-Worker's result: {result}
-
-Evaluate the quality:
-- Does the result address what was asked?
-- Is the information accurate and complete?
-- Is the output clear?
-
-Respond with ONLY valid JSON:
-{{"approved": true, "note": "Good work, task completed successfully."}}
-
-Or if improvements needed:
-{{"approved": false, "note": "The summary is missing the dates.", "escalate": false}}
-
-Or if task should go to CEO:
-{{"approved": false, "note": "This needs a human decision.", "escalate": true}}
 
 IMPORTANT: Only output JSON. No other text."""
 

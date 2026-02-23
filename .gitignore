@@ -207,7 +207,6 @@ marimo/_lsp/
 __marimo__/
 
 # macgent runtime data (local only, not committed)
-souls/
 data/
 *.faiss
 *.db

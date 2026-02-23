@@ -28,6 +28,7 @@ class DB:
                 review_note TEXT,
                 escalation TEXT,
                 ping_pong_round INTEGER NOT NULL DEFAULT 0,
+                notion_page_id TEXT DEFAULT NULL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -79,6 +80,14 @@ class DB:
             );
         """)
         self.conn.commit()
+        self._migrate()
+
+    def _migrate(self):
+        """Run any pending schema migrations."""
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(tasks)").fetchall()}
+        if "notion_page_id" not in cols:
+            self.conn.execute("ALTER TABLE tasks ADD COLUMN notion_page_id TEXT DEFAULT NULL")
+            self.conn.commit()
 
     # ── Tasks ──
 
@@ -128,6 +137,10 @@ class DB:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def set_notion_page_id(self, task_id: int, page_id: str):
+        self.conn.execute("UPDATE tasks SET notion_page_id = ? WHERE id = ?", (page_id, task_id))
+        self.conn.commit()
+
     def get_review_tasks(self) -> list[dict]:
         rows = self.conn.execute(
             "SELECT * FROM tasks WHERE status = 'review' ORDER BY priority, created_at",
@@ -170,6 +183,19 @@ class DB:
                 (to_role,),
             )
         self.conn.commit()
+
+    def get_unread_messages_for_task(self, task_id: int, from_role: str | None = None) -> list[dict]:
+        if from_role:
+            rows = self.conn.execute(
+                "SELECT * FROM messages WHERE task_id = ? AND from_role = ? AND read = 0 ORDER BY created_at",
+                (task_id, from_role),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM messages WHERE task_id = ? AND read = 0 ORDER BY created_at",
+                (task_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def get_task_messages(self, task_id: int) -> list[dict]:
         rows = self.conn.execute(

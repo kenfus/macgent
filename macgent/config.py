@@ -33,21 +33,24 @@ class Config:
     # Per-role models (with fallback chains, comma-separated)
     manager_models: str = "google/gemma-3-27b-it:free,mistralai/mistral-small-3.1-24b-instruct:free,nvidia/nemotron-3-nano-30b-a3b:free"
     worker_models: str = "arcee-ai/trinity-large-preview:free,qwen/qwen3-coder:free,google/gemma-3-27b-it:free"
-    stakeholder_models: str = "meta-llama/llama-3.3-70b-instruct:free,arcee-ai/trinity-large-preview:free,google/gemma-3-27b-it:free"
 
     # Daemon settings
     daemon_interval: int = 1800  # 30 minutes in seconds
-    max_ping_pong_rounds: int = 3
     stale_task_minutes: int = 60
 
     # Telegram Bot
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
 
+    # Notion
+    notion_token: str = ""
+    notion_database_id: str = ""
+
     # Paths
     db_path: str = ""
     souls_dir: str = ""
     faiss_path: str = ""
+    memories_dir: str = ""  # daily memory .md files
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -66,15 +69,16 @@ class Config:
             use_vision=os.getenv("USE_VISION", "false").lower() == "true",
             manager_models=os.getenv("MANAGER_MODELS", cls.manager_models),
             worker_models=os.getenv("WORKER_MODELS", cls.worker_models),
-            stakeholder_models=os.getenv("STAKEHOLDER_MODELS", cls.stakeholder_models),
             daemon_interval=int(os.getenv("DAEMON_INTERVAL", str(cls.daemon_interval))),
-            max_ping_pong_rounds=int(os.getenv("MAX_PING_PONG_ROUNDS", str(cls.max_ping_pong_rounds))),
             stale_task_minutes=int(os.getenv("STALE_TASK_MINUTES", str(cls.stale_task_minutes))),
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
             telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
+            notion_token=os.getenv("NOTION_TOKEN", ""),
+            notion_database_id=os.getenv("NOTION_PLANNING_DATABASE_ID", ""),
             db_path=os.getenv("MACGENT_DB_PATH", str(macgent_dir / "macgent.db")),
             souls_dir=os.getenv("MACGENT_SOULS_DIR", str(macgent_dir / "souls")),
             faiss_path=os.getenv("MACGENT_FAISS_PATH", str(macgent_dir / "memory.faiss")),
+            memories_dir=os.getenv("MACGENT_MEMORIES_DIR", str(macgent_dir / "memories")),
         )
 
     def get_model_chain(self, role: str) -> list[str]:
@@ -82,6 +86,5 @@ class Config:
         chains = {
             "manager": self.manager_models,
             "worker": self.worker_models,
-            "stakeholder": self.stakeholder_models,
         }
         return [m.strip() for m in chains.get(role, self.worker_models).split(",")]
