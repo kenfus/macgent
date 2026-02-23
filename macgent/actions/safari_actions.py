@@ -1,3 +1,5 @@
+import json
+import subprocess
 import time
 import logging
 from macgent.perception.safari import run_osascript, execute_js_in_safari, wait_for_page_load
@@ -61,24 +63,70 @@ def go_forward() -> str:
 
 
 def click_element_by_index(index: int) -> str:
-    """Click an element by its macgent index (from element list)."""
+    """Click an element by its macgent index using a real OS-level mouse click.
+
+    Uses cliclick with screen coordinates derived from the element's viewport rect
+    and Safari's window position. This produces a trusted event (isTrusted=true)
+    that React portals and complex SPAs (Booking.com, etc.) actually respond to.
+    Falls back to JS click if cliclick fails.
+    """
+    # Scroll element into view and get its screen coordinates
     js = f"""
     (function() {{
         var el = document.querySelector('[data-mid="{index}"]');
-        if (!el) return 'ERROR: Element [{index}] not found. Page may have changed.';
+        if (!el) return JSON.stringify({{error: 'Element [{index}] not found. Page may have changed.'}});
         el.scrollIntoView({{block: 'center', behavior: 'instant'}});
-        el.focus();
-        el.click();
-        el.dispatchEvent(new MouseEvent('mousedown', {{bubbles: true}}));
-        el.dispatchEvent(new MouseEvent('mouseup', {{bubbles: true}}));
-        el.dispatchEvent(new MouseEvent('click', {{bubbles: true}}));
-        var text = (el.innerText || el.value || el.getAttribute('aria-label') || '').substring(0, 50);
-        return 'Clicked [' + {index} + '] ' + el.tagName.toLowerCase() + ': ' + text;
+        var rect = el.getBoundingClientRect();
+        // window.screenX/Y = window top-left in logical screen px
+        // outerHeight - innerHeight = chrome (toolbar + tab bar) height
+        var chromeH = window.outerHeight - window.innerHeight;
+        var x = Math.round(window.screenX + rect.left + rect.width / 2);
+        var y = Math.round(window.screenY + chromeH + rect.top + rect.height / 2);
+        var text = (el.innerText || el.value || el.getAttribute('aria-label') || el.title || '').trim().substring(0, 50);
+        return JSON.stringify({{x: x, y: y, tag: el.tagName.toLowerCase(), text: text}});
     }})()
     """
-    result = execute_js_in_safari(js)
-    time.sleep(0.3)  # Brief pause for Safari to process the click
-    return result
+    raw = execute_js_in_safari(js)
+
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return raw  # Raw error string from JS
+
+    if "error" in data:
+        return f"ERROR: {data['error']}"
+
+    x, y, tag, text = data["x"], data["y"], data["tag"], data["text"]
+
+    # Try real OS-level click first (generates isTrusted=true events)
+    try:
+        from macgent.config import Config
+        cliclick = Config().cliclick_path
+        # Bring Safari to front so the click lands in the right window
+        run_osascript('tell application "Safari" to activate')
+        time.sleep(0.15)
+        subprocess.run([cliclick, f"c:{x},{y}"], check=True, timeout=5)
+        time.sleep(0.3)
+        return f"Clicked [{index}] {tag}: {text}"
+    except Exception as e:
+        logger.warning(f"cliclick failed ({e}), falling back to JS click")
+
+    # Fallback: JavaScript click
+    js_fallback = f"""
+    (function() {{
+        var el = document.querySelector('[data-mid="{index}"]');
+        if (!el) return 'ERROR: not found after scroll';
+        el.focus();
+        el.click();
+        el.dispatchEvent(new MouseEvent('mousedown', {{bubbles: true, isTrusted: false}}));
+        el.dispatchEvent(new MouseEvent('mouseup', {{bubbles: true, isTrusted: false}}));
+        el.dispatchEvent(new MouseEvent('click', {{bubbles: true, isTrusted: false}}));
+        return 'JS-clicked [{index}]';
+    }})()
+    """
+    execute_js_in_safari(js_fallback)
+    time.sleep(0.3)
+    return f"Clicked [{index}] {tag}: {text} (JS fallback)"
 
 
 def click_element(selector: str) -> str:

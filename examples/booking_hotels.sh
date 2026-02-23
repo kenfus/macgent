@@ -1,4 +1,4 @@
 #!/bin/bash
-# Search for hotels near Novartis Campus Basel on booking.com
+# Search for hotels in Basel on booking.com, check-in March 15-16 2026
 cd "$(dirname "$0")/.."
-uv run macgent 'Go to booking.com. Search for hotels in Basel, Switzerland near the Novartis Campus and train station. Check in March 15, check out March 16, 2026, 1 adult. Search and list the hotel names, prices, and ratings from the results. Then report done with the list.'
+uv run macgent 'Search booking.com for hotels in Basel, Switzerland. Check-in March 15, check-out March 16, 2026, 1 adult. List the first 5 results with hotel name, price, and rating.'

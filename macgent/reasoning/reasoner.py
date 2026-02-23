@@ -71,15 +71,19 @@ def _extract_json(text: str) -> dict | None:
     return None
 
 
-def get_next_action(client: LLMClient, task: str, observation: Observation, history: list[Step]) -> Action:
+def get_next_action(client: LLMClient, task: str, observation: Observation,
+                    history: list[Step], soul: str = "") -> Action:
     """Ask the reasoning LLM for the next action."""
     user_msg = build_user_message(task, observation, history)
     messages = [{"role": "user", "content": user_msg}]
 
+    # Prepend soul to system prompt if provided
+    system = (soul.strip() + "\n\n---\n\n" + SYSTEM_PROMPT) if soul.strip() else SYSTEM_PROMPT
+
     try:
         response_text = client.chat(
             messages=messages,
-            system=SYSTEM_PROMPT,
+            system=system,
             max_tokens=1024,
             temperature=0.0,
         )

@@ -17,7 +17,9 @@ from macgent.actions.dispatcher import dispatch
 
 logger = logging.getLogger("macgent")
 
-SPA_DOMAINS = ["notion.so", "notion.com", "booking.com", "app.notion.so"]
+SPA_DOMAINS = ["notion.so", "notion.com", "booking.com", "app.notion.so", "docs.google.com"]
+# Per-domain wait times after click/nav (seconds). Longer for complex JS rendering.
+SPA_WAIT = {"booking.com": 2.5, "docs.google.com": 1.0}
 
 # Actions that trigger page loads
 NAVIGATION_ACTIONS = {"navigate", "go_back", "go_forward", "click", "click_element", "new_tab", "switch_tab"}
@@ -39,6 +41,20 @@ class Agent:
                 config.vision_model, config.vision_api_type,
             )
 
+        # Load worker soul so it guides every step of browser execution
+        self.soul = self._load_soul("worker")
+
+    def _load_soul(self, role: str) -> str:
+        """Load soul file from souls_dir, falling back silently if not found."""
+        from pathlib import Path
+        soul_path = Path(self.config.souls_dir) / f"{role}.md"
+        if soul_path.exists():
+            soul = soul_path.read_text()
+            logger.info(f"Loaded {role} soul from {soul_path}")
+            return soul
+        logger.debug(f"No soul file for {role} at {soul_path}")
+        return ""
+
     def run(self, task: str) -> AgentState:
         state = AgentState(task=task, max_steps=self.config.max_steps)
 
@@ -49,7 +65,7 @@ class Agent:
             print(f"Vision: {self.config.vision_model}")
         print(f"{'='*60}\n")
 
-        last_action_type = None
+        last_action_key = None
         stuck_count = 0
 
         for step_num in range(1, state.max_steps + 1):
@@ -58,7 +74,15 @@ class Agent:
             # Wait for page load after navigation actions
             if state.steps and state.steps[-1].action.type in NAVIGATION_ACTIONS:
                 wait_for_page_load(timeout=5)
-                time.sleep(0.5)
+                # SPAs need extra time for React re-renders (date pickers, modals)
+                try:
+                    _url = get_safari_url()
+                    _spa_wait = next((w for d, w in SPA_WAIT.items() if d in _url), None)
+                    if _spa_wait is None and any(d in _url for d in SPA_DOMAINS):
+                        _spa_wait = 1.5
+                except Exception:
+                    _spa_wait = None
+                time.sleep(_spa_wait if _spa_wait else 0.5)
 
             # 1. OBSERVE
             last_action_str = ""
@@ -75,17 +99,24 @@ class Agent:
             print(f"  Think: {action.reasoning[:120]}")
             print(f"  Action: {action.type} {action.params}")
 
-            # Stuck detection
-            if action.type == last_action_type and action.type == "wait":
+            # Stuck detection: catch repeated identical actions (wait OR same click index)
+            action_key = (action.type, str(action.params.get("index", action.params.get("url", ""))))
+            if action_key == last_action_key:
                 stuck_count += 1
             else:
                 stuck_count = 0
-            last_action_type = action.type
+            last_action_key = action_key
 
             if stuck_count >= 3:
-                print("  [!] Stuck in wait loop, scrolling")
-                action = Action(type="scroll", params={"direction": "down", "amount": 500},
-                                reasoning="Stuck - scrolling to discover more")
+                print(f"  [!] Stuck repeating '{action.type}' — pressing Escape and scrolling up")
+                # Try to dismiss any blocking overlay, then scroll to reveal more
+                from macgent.actions.dispatcher import dispatch as _dispatch
+                try:
+                    _dispatch(Action(type="key_press", params={"key": "escape"}, reasoning="escape overlay"))
+                except Exception:
+                    pass
+                action = Action(type="scroll", params={"direction": "up", "amount": 300},
+                                reasoning="Stuck on same action — scrolling up to find what's blocking")
 
             # 3. Record step
             step = Step(step_number=step_num, observation=observation, action=action)
@@ -190,4 +221,4 @@ class Agent:
         return obs
 
     def _think(self, task: str, observation: Observation, history: list[Step]) -> Action:
-        return get_next_action(self.reasoning_client, task, observation, history)
+        return get_next_action(self.reasoning_client, task, observation, history, soul=self.soul)

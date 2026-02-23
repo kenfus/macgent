@@ -104,11 +104,14 @@ ALWAYS prefer using index numbers. They are the most reliable way to interact wi
 2. Use element [index] numbers for clicking and typing. They are reliable.
 3. After navigate, the page needs time to load. Use wait if needed.
 4. If clicking by index fails, try by text. If text fails, try mouse_click coordinates.
-5. If stuck on same action 3+ times, try a completely different approach.
+5. If stuck on same action 2+ times with no change, try a COMPLETELY different approach.
 6. For search: type query then press Return key.
 7. To fill forms: click input first if needed, then type, then move to next field.
 8. Scroll down to find more content if the page seems incomplete.
-9. For Google Sheets: use keyboard shortcuts (Cmd+C, Cmd+V, Tab, Return) to navigate cells.
+9. GOOGLE SHEETS: The page structure shows "CURRENT CELL: A1" — always check this to know
+   where you are. To navigate to a specific cell: click the Name Box input (shows cell address
+   like "A1"), type the address, press Return. Then type content and Tab to move right,
+   Return to move to next row. Each Tab/Return moves cursor — check CURRENT CELL to confirm.
 10. POPUP PRIORITY: At each new page load, check for popups/modals FIRST before any other
     action. If you see cookie consent, login dialogs, newsletter popups, or "Sign in with
     Google/Apple" — dismiss them immediately. Click "Reject all", "Decline", "No thanks",
@@ -116,10 +119,37 @@ ALWAYS prefer using index numbers. They are the most reliable way to interact wi
     the task explicitly requires it. A popup blocking the page will also block scrolling
     and clicking — always dismiss it first.
 
+11. DATE PICKERS: For complex calendar widgets (Booking.com, Airbnb, etc.):
+    - Click the date field once. Calendar cells appear as TD[role=gridcell] date=YYYY-MM-DD
+    - After seeing calendar cells, click check-in date ONCE. It will show [selected].
+    - Then IMMEDIATELY click the check-out date. Do NOT click check-in again.
+    - If a date shows [selected], it is already set — move to the NEXT date.
+    - Navigate months with "Next month" / "Previous month" buttons if needed.
+    - If the calendar doesn't appear after clicking, press Escape once and try again.
+
+12. MAIL / CALENDAR / IMESSAGE: These actions call macOS apps directly via AppleScript.
+    DO NOT navigate to Gmail, Calendar, or any website to use them. Just call the action:
+    - mail_read → reads from macOS Mail inbox (no navigation needed)
+    - mail_send → sends email via macOS Mail (no navigation needed)
+    - calendar_read / calendar_add → macOS Calendar (no navigation needed)
+    - imessage_read / imessage_send → macOS Messages (no navigation needed)
+    NEVER use open_app or navigate before these actions. They work immediately.
+
+13. EXTRACTING RESULTS: When you are on a results page (search results, listings, etc.):
+    - READ THE PAGE TEXT FIRST — hotel names, prices, ratings are already in PAGE TEXT
+    - Do NOT rely only on execute_js with CSS selectors; the DOM structure changes often
+    - Compile the list from what you can read in PAGE TEXT and call done with the summary
+    - Only use execute_js as a last resort when the page text is clearly incomplete
+
 ## Response Format
 
 {"reasoning": "step by step thinking about what to do next", "action": {"type": "...", "params": {...}}}
 """
+
+
+_MAIL_KEYWORDS = ("email", "mail", "inbox", "send email", "read email")
+_CALENDAR_KEYWORDS = ("calendar", "add event", "schedule", "meeting")
+_IMESSAGE_KEYWORDS = ("imessage", "iMessage", "text message", "send message", "sms")
 
 
 def build_user_message(task: str, observation, history: list) -> str:
@@ -127,6 +157,25 @@ def build_user_message(task: str, observation, history: list) -> str:
     parts = []
 
     parts.append(f"TASK: {task}")
+
+    # Inject task-specific reminders so the model uses direct actions, not the browser
+    task_lower = task.lower()
+    if any(kw in task_lower for kw in _MAIL_KEYWORDS):
+        parts.append(
+            "REMINDER: Use mail_read and mail_send actions directly. "
+            "Do NOT navigate to Gmail or any website. "
+            "Do NOT use open_app. Just call mail_read / mail_send immediately."
+        )
+    if any(kw in task_lower for kw in _CALENDAR_KEYWORDS):
+        parts.append(
+            "REMINDER: Use calendar_read / calendar_add actions directly. "
+            "Do NOT open the Calendar app or navigate anywhere."
+        )
+    if any(kw in task_lower for kw in _IMESSAGE_KEYWORDS):
+        parts.append(
+            "REMINDER: Use imessage_read / imessage_send actions directly. "
+            "Do NOT open Messages app or navigate anywhere."
+        )
 
     if history:
         parts.append("\nRECENT HISTORY:")

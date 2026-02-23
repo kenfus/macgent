@@ -61,48 +61,52 @@ def get_page_text(max_chars: int = 4000) -> str:
     return execute_js_in_safari(js)
 
 
-def get_page_interactive_elements(max_elements: int = 40) -> str:
-    """Find interactive elements, tag them with data-macgent-id, return structured list.
+def get_page_interactive_elements(max_elements: int = 80) -> str:
+    """Find interactive elements, tag them with data-mid, return structured list.
 
     Each element gets a numeric index [0], [1], etc. that the agent can reference.
     Elements are tagged in the DOM so actions can find them by index.
+
+    Two-pass strategy: calendar/overlay elements are always listed first (React portals
+    append to body end and would otherwise be cut off by the max_elements cap).
     """
     js = """
     (function() {
+        var MAX = """ + str(max_elements) + """;
+
         // Clear old tags
         document.querySelectorAll('[data-mid]').forEach(function(el) {
             el.removeAttribute('data-mid');
         });
 
         var elements = [];
-        var selectors = 'a[href], button, input, select, textarea, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [onclick], [contenteditable="true"], summary, details';
-        var nodes = document.querySelectorAll(selectors);
+        var seen = new Set ? new Set() : {
+            _s: [], has: function(x){ return this._s.indexOf(x) >= 0; },
+            add: function(x){ this._s.push(x); }
+        };
         var idx = 0;
 
-        for (var i = 0; i < nodes.length && idx < """ + str(max_elements) + """; i++) {
-            var el = nodes[i];
+        function isVisible(el) {
             var rect = el.getBoundingClientRect();
-
-            // Skip invisible/offscreen elements
-            if (rect.width < 2 || rect.height < 2) continue;
-            if (rect.bottom < 0 || rect.top > window.innerHeight + 200) continue;
-            if (rect.right < 0 || rect.left > window.innerWidth) continue;
-
-            // Skip hidden elements
+            if (rect.width < 2 || rect.height < 2) return false;
+            if (rect.bottom < 0 || rect.top > window.innerHeight + 300) return false;
+            if (rect.right < 0 || rect.left > window.innerWidth) return false;
             var style = window.getComputedStyle(el);
-            if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+            if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+            return true;
+        }
 
-            // Tag element for later reference
+        function describeEl(el) {
             el.setAttribute('data-mid', idx);
-
             var tag = el.tagName.toLowerCase();
             var type = el.getAttribute('type') || '';
             var text = (el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || el.title || '').trim().substring(0, 60);
             var href = el.getAttribute('href') || '';
             var name = el.getAttribute('name') || '';
             var role = el.getAttribute('role') || '';
+            var dataDate = el.getAttribute('data-date') || '';
+            var dataTestId = el.getAttribute('data-testid') || '';
 
-            // Build a readable description
             var desc = '[' + idx + '] ';
             if (tag === 'a') {
                 desc += 'LINK "' + text + '"';
@@ -118,15 +122,15 @@ def get_page_interactive_elements(max_elements: int = 40) -> str:
                 if (val && inputType !== 'password') desc += ' value="' + val.substring(0, 40) + '"';
                 if (el.checked !== undefined) desc += el.checked ? ' [checked]' : ' [unchecked]';
             } else if (tag === 'select') {
-                var selected = el.options[el.selectedIndex] ? el.options[el.selectedIndex].text : '';
+                var selected = el.options && el.options[el.selectedIndex] ? el.options[el.selectedIndex].text : '';
                 desc += 'SELECT';
                 if (name) desc += ' name=' + name;
                 desc += ' selected="' + selected + '"';
                 var opts = [];
-                for (var j = 0; j < Math.min(el.options.length, 5); j++) {
+                for (var j = 0; j < Math.min(el.options ? el.options.length : 0, 5); j++) {
                     opts.push(el.options[j].text);
                 }
-                if (el.options.length > 5) opts.push('...');
+                if (el.options && el.options.length > 5) opts.push('...');
                 desc += ' options=[' + opts.join(', ') + ']';
             } else if (tag === 'textarea') {
                 desc += 'TEXTAREA';
@@ -136,12 +140,45 @@ def get_page_interactive_elements(max_elements: int = 40) -> str:
             } else {
                 desc += tag.toUpperCase();
                 if (role) desc += '[role=' + role + ']';
+                if (dataDate) desc += ' date=' + dataDate;
+                if (dataTestId) desc += ' testid=' + dataTestId;
+                // Show selection/disabled state for calendar cells
+                if (el.getAttribute('aria-selected') === 'true') desc += ' [selected]';
+                if (el.getAttribute('aria-disabled') === 'true') desc += ' [disabled]';
                 desc += ' "' + text + '"';
             }
-
-            elements.push(desc);
-            idx++;
+            return desc;
         }
+
+        function processNodes(nodes) {
+            for (var i = 0; i < nodes.length && idx < MAX; i++) {
+                var el = nodes[i];
+                if (seen.has(el)) continue;
+                if (!isVisible(el)) continue;
+                seen.add(el);
+                elements.push(describeEl(el));
+                idx++;
+            }
+        }
+
+        // Pass 1: Calendar cells — always extract first (React portals live at end of body)
+        // These are the most important when a date picker is open
+        processNodes(document.querySelectorAll('[data-date]'));
+        processNodes(document.querySelectorAll('[role="gridcell"]'));
+
+        // Pass 2: Standard interactive elements
+        var stdSelectors = [
+            'a[href]', 'button', 'input', 'select', 'textarea',
+            '[role="button"]', '[role="link"]', '[role="tab"]',
+            '[role="menuitem"]', '[role="option"]',
+            '[role="checkbox"]', '[role="radio"]', '[role="switch"]',
+            '[onclick]', '[contenteditable="true"]', 'summary', 'details',
+            '[tabindex="0"]', '[tabindex="-1"]',
+            '[data-testid]',
+            '[aria-selected]', '[aria-checked]', '[aria-expanded]',
+        ].join(', ');
+        processNodes(document.querySelectorAll(stdSelectors));
+
         return elements.join('\\n');
     })()
     """
@@ -184,6 +221,16 @@ def get_page_structure(max_chars: int = 2000) -> str:
             var ft = focused.tagName.toLowerCase();
             var fn = focused.name || focused.id || '';
             parts.push('FOCUSED: ' + ft + (fn ? '[' + fn + ']' : ''));
+        }
+
+        // Google Sheets: current cell reference (Name Box) and formula bar content
+        var nameBox = document.querySelector('input.waffle-name-box');
+        if (nameBox && nameBox.value) {
+            parts.push('CURRENT CELL: ' + nameBox.value);
+        }
+        var formulaBar = document.querySelector('.cell-input');
+        if (formulaBar && formulaBar.textContent) {
+            parts.push('CELL CONTENT: ' + formulaBar.textContent.trim().substring(0, 80));
         }
 
         return parts.join('\\n');
