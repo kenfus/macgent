@@ -53,9 +53,9 @@ def main():
     log_p = sub.add_parser("log", help="Show agent activity log")
     log_p.add_argument("-n", type=int, default=20, help="Number of entries")
 
-    # macgent answer <task_id> 'text' — answer an escalation
-    answer_p = sub.add_parser("answer", help="Answer a CEO escalation")
-    answer_p.add_argument("task_id", type=int, help="Task ID to answer")
+    # macgent answer <page_id> 'text' — answer a blocked task
+    answer_p = sub.add_parser("answer", help="Answer a blocked task")
+    answer_p.add_argument("page_id", help="Notion page ID of the blocked task")
     answer_p.add_argument("text", nargs="+", help="Answer text")
 
     # macgent soul edit <role> — open soul file in editor
@@ -91,7 +91,7 @@ def main():
 
     elif args.command == "answer":
         text = " ".join(args.text)
-        _answer_escalation(config, args.task_id, text)
+        _answer_escalation(config, args.page_id, text)
 
     elif args.command == "soul":
         _soul_command(config, args.action, args.role)
@@ -103,29 +103,35 @@ def _run_task(config, description: str):
     from macgent.memory import MemoryManager
     from macgent.roles.manager import ManagerRole
     from macgent.roles.worker import WorkerRole
+    from macgent.actions import notion_actions
 
     db = DB(config.db_path)
     memory = MemoryManager(config)
 
     # Route through manager to get Notion integration + clarification
     manager = ManagerRole(config, db, memory)
-    task_id = manager.handle_new_ceo_task(description)
-    print(f"Created task #{task_id}: {description}")
+    page_id = manager.handle_new_ceo_task(description)
+    if not page_id:
+        print("Failed to create task in Notion.")
+        return
+    print(f"Created task in Notion: {description}")
 
-    # If task needs clarification, stop here (manager will handle via heartbeat)
-    task = db.get_task(task_id)
-    if task and task["status"] == "clarifying":
+    # Check if task needs clarification (Inbox status)
+    task = notion_actions.get_task(config.notion_token, page_id)
+    if task and task["status"] == "Inbox":
         print("Task requires CEO clarification — check Telegram.")
         return
 
     # Otherwise run immediately
     worker = WorkerRole(config, db, memory)
-    worker.run_task(task_id)
+    worker.run_task(task)
 
-    task = db.get_task(task_id)
-    print(f"\nFinal status: {task['status']}")
-    if task.get("result"):
-        print(f"Result: {task['result']}")
+    # Show final status from Notion
+    task = notion_actions.get_task(config.notion_token, page_id)
+    if task:
+        print(f"\nFinal status: {task['status']}")
+        if task.get("notes"):
+            print(f"Notes: {task['notes']}")
 
 
 def _run_daemon(config, interval: int, once: bool = False):
@@ -185,7 +191,7 @@ def _sync_daemon_loop(config, interval, once):
 
     # Embed recent daily memory logs on startup
     try:
-        memory.embed_past_logs(db, days=7)
+        memory.embed_past_logs(db, days=3)
     except Exception as e:
         import logging
         logging.getLogger("macgent").warning(f"embed_past_logs failed: {e}")
@@ -201,10 +207,12 @@ def _sync_daemon_loop(config, interval, once):
             print(f"Heartbeat cycle #{cycle}")
             print(f"{'='*60}")
 
-            # 1. Manager checks notifications, email, Notion board
-            manager.tick()
+            # 1. Manager: passive heartbeat check
+            #    Returns True if something actionable happened, False = HEARTBEAT_OK
+            active = manager.tick()
 
-            # 2. Worker picks and executes pending tasks
+            # 2. Worker: always check for pending tasks regardless of manager result
+            #    (there may be tasks pending from before this cycle)
             worker.tick()
 
             if once:
@@ -227,21 +235,21 @@ def _sync_daemon_loop(config, interval, once):
 
 
 def _show_status(config):
-    """Show tasks from the database."""
-    from macgent.db import DB
-    db = DB(config.db_path)
-    tasks = db.list_tasks()
+    """Show tasks from the Notion board."""
+    from macgent.actions import notion_actions
+
+    tasks = notion_actions.list_tasks(config.notion_token, config.notion_database_id)
     if not tasks:
-        print("No tasks.")
+        print("No tasks on the Notion board.")
         return
     for t in tasks:
         status_icon = {
-            "pending": " ", "clarifying": "?", "in_progress": ">",
-            "review": "R", "completed": "+", "failed": "!", "escalated": "^",
+            "Inbox": "?", "Ready": " ", "In Progress": ">",
+            "Done": "+", "Blocked": "!",
         }.get(t["status"], "?")
-        print(f"  [{status_icon}] #{t['id']} (P{t['priority']}) {t['title']}")
-        if t.get("review_note"):
-            print(f"      Review: {t['review_note'][:80]}")
+        print(f"  [{status_icon}] ({t['priority']}) {t['title']}  [{t['status']}]")
+        if t.get("notes"):
+            print(f"      Notes: {t['notes'][:80]}")
 
 
 def _show_log(config, n: int):
@@ -256,17 +264,23 @@ def _show_log(config, n: int):
         print(f"  [{e['created_at']}] {e['role']:12s} {e['action']:16s} {(e.get('detail') or '')[:60]}")
 
 
-def _answer_escalation(config, task_id: int, text: str):
-    """Answer a CEO escalation."""
+def _answer_escalation(config, page_id: str, text: str):
+    """Answer a blocked task via CLI."""
     from macgent.db import DB
-    db = DB(config.db_path)
-    task = db.get_task(task_id)
+    from macgent.actions import notion_actions
+
+    task = notion_actions.get_task(config.notion_token, page_id)
     if not task:
-        print(f"Task #{task_id} not found.")
+        print(f"Task {page_id} not found in Notion.")
         return
-    db.send_message("ceo", "worker", task_id, text)
-    db.update_task(task_id, status="pending")
-    print(f"Answer sent to task #{task_id}, status set back to pending.")
+
+    db = DB(config.db_path)
+    db.send_message("ceo", "manager", page_id, text)
+    notion_actions.update_task(
+        config.notion_token, page_id,
+        status="Ready", note=f"CEO input: {text[:500]}",
+    )
+    print(f"Answer sent for '{task['title']}', status set to Ready.")
 
 
 def _soul_command(config, action: str, role: str):

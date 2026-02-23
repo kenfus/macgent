@@ -1,6 +1,11 @@
-"""Notion REST API actions for managing the planning board."""
+"""Notion REST API actions for managing the planning board.
+
+Notion is the SINGLE SOURCE OF TRUTH for all tasks. No SQLite task storage.
+"""
 
 import logging
+from datetime import datetime, timezone, timedelta
+
 import httpx
 
 logger = logging.getLogger("macgent.actions.notion")
@@ -17,8 +22,7 @@ REQUIRED_PROPERTIES = {
                 {"name": "Ready", "color": "blue"},
                 {"name": "In Progress", "color": "yellow"},
                 {"name": "Done", "color": "green"},
-                {"name": "Failed", "color": "red"},
-                {"name": "Escalated", "color": "orange"},
+                {"name": "Blocked", "color": "red"},
             ]
         }
     },
@@ -44,6 +48,37 @@ def _headers(token: str) -> dict:
         "Authorization": f"Bearer {token}",
         "Notion-Version": NOTION_VERSION,
         "Content-Type": "application/json",
+    }
+
+
+def _parse_page(page: dict) -> dict:
+    """Parse a Notion page into a flat task dict."""
+    props = page.get("properties", {})
+    title_parts = props.get("Name", {}).get("title", [])
+    title = "".join(t.get("plain_text", "") for t in title_parts)
+    page_status = (props.get("Status", {}).get("select") or {}).get("name", "")
+    priority = (props.get("Priority", {}).get("select") or {}).get("name", "")
+    macgent_id = props.get("MacgentID", {}).get("number")
+    desc_parts = props.get("Description", {}).get("rich_text", [])
+    description = "".join(t.get("plain_text", "") for t in desc_parts)
+    notes_parts = props.get("Notes", {}).get("rich_text", [])
+    notes = "".join(t.get("plain_text", "") for t in notes_parts)
+    source_parts = props.get("Source", {}).get("rich_text", [])
+    source = "".join(t.get("plain_text", "") for t in source_parts)
+
+    page_id = page["id"]
+    return {
+        "page_id": page_id,
+        "id": page_id,                     # alias for code that expects task["id"]
+        "title": title,
+        "status": page_status,
+        "priority": priority,
+        "macgent_id": macgent_id,
+        "description": description,
+        "notes": notes,
+        "source": source,
+        "notion_page_id": page_id,          # alias for code that expects task["notion_page_id"]
+        "last_edited_time": page.get("last_edited_time", ""),
     }
 
 
@@ -93,7 +128,7 @@ def create_task(
     priority: int = 3,
     source: str = "",
     status: str = "Ready",
-    task_id: int | None = None,
+    note: str = "",
 ) -> str | None:
     """Create a new task page in the Notion database. Returns the page_id or None."""
     if not token or not database_id:
@@ -116,8 +151,10 @@ def create_task(
         properties["Source"] = {
             "rich_text": [{"text": {"content": source[:200]}}]
         }
-    if task_id is not None:
-        properties["MacgentID"] = {"number": task_id}
+    if note:
+        properties["Notes"] = {
+            "rich_text": [{"text": {"content": note[:2000]}}]
+        }
 
     try:
         resp = httpx.post(
@@ -199,22 +236,7 @@ def list_tasks(
 
         tasks = []
         for page in results:
-            props = page.get("properties", {})
-            title_parts = props.get("Name", {}).get("title", [])
-            title = "".join(t.get("plain_text", "") for t in title_parts)
-            page_status = (props.get("Status", {}).get("select") or {}).get("name", "")
-            priority = (props.get("Priority", {}).get("select") or {}).get("name", "")
-            macgent_id = (props.get("MacgentID", {}).get("number"))
-            desc_parts = props.get("Description", {}).get("rich_text", [])
-            description = "".join(t.get("plain_text", "") for t in desc_parts)
-            tasks.append({
-                "page_id": page["id"],
-                "title": title,
-                "status": page_status,
-                "priority": priority,
-                "macgent_id": macgent_id,
-                "description": description,
-            })
+            tasks.append(_parse_page(page))
         return tasks
     except Exception as e:
         logger.error(f"Failed to list Notion tasks: {e}")
@@ -222,7 +244,7 @@ def list_tasks(
 
 
 def get_task(token: str, page_id: str) -> dict | None:
-    """Get a single Notion task page."""
+    """Get a single Notion task page. Returns full task dict or None."""
     if not token or not page_id:
         return None
 
@@ -233,17 +255,48 @@ def get_task(token: str, page_id: str) -> dict | None:
             timeout=10,
         )
         resp.raise_for_status()
-        page = resp.json()
-        props = page.get("properties", {})
-        title_parts = props.get("Name", {}).get("title", [])
-        title = "".join(t.get("plain_text", "") for t in title_parts)
-        return {
-            "page_id": page["id"],
-            "title": title,
-            "status": (props.get("Status", {}).get("select") or {}).get("name", ""),
-            "priority": (props.get("Priority", {}).get("select") or {}).get("name", ""),
-            "macgent_id": props.get("MacgentID", {}).get("number"),
-        }
+        return _parse_page(resp.json())
     except Exception as e:
         logger.error(f"Failed to get Notion task {page_id}: {e}")
         return None
+
+
+def next_ready_task(token: str, database_id: str) -> dict | None:
+    """Get highest-priority Ready task from Notion. Returns task dict or None."""
+    tasks = list_tasks(token, database_id, status="Ready")
+    if not tasks:
+        return None
+    priority_order = {"P1": 1, "P2": 2, "P3": 3, "P4": 4}
+    tasks.sort(key=lambda t: priority_order.get(t["priority"], 99))
+    return tasks[0]
+
+
+def get_stale_tasks(token: str, database_id: str, minutes: int = 60) -> list[dict]:
+    """Get In Progress tasks not edited in the last N minutes."""
+    if not token or not database_id:
+        return []
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+    body = {
+        "filter": {
+            "and": [
+                {"property": "Status", "select": {"equals": "In Progress"}},
+                {"timestamp": "last_edited_time", "last_edited_time": {"before": cutoff}},
+            ]
+        },
+        "page_size": 50,
+    }
+
+    try:
+        resp = httpx.post(
+            f"{NOTION_API}/databases/{database_id}/query",
+            headers=_headers(token),
+            json=body,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        results = resp.json().get("results", [])
+        return [_parse_page(page) for page in results]
+    except Exception as e:
+        logger.error(f"Failed to get stale Notion tasks: {e}")
+        return []

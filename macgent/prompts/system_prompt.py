@@ -76,6 +76,18 @@ mail_send: Send an email
 mail_reply: Reply to an email by inbox number
   {"reasoning": "...", "action": {"type": "mail_reply", "params": {"number": 1, "body": "Reply text"}}}
 
+### Notion Board
+notion_update: Update your task's Notion card with progress or status
+  {"reasoning": "...", "action": {"type": "notion_update", "params": {"status": "In Progress", "note": "Found 3 hotels, comparing prices"}}}
+  {"reasoning": "...", "action": {"type": "notion_update", "params": {"status": "Blocked", "note": "Need to know: Basel city center or airport area?"}}}
+  {"reasoning": "...", "action": {"type": "notion_update", "params": {"note": "Step 2/5: Entering dates on booking.com"}}}
+  Status values: "In Progress", "Done", "Blocked". Omit status to just add a progress note.
+  Use "Blocked" when you cannot proceed without CEO input. The Manager will read your note and ask the CEO.
+
+read_skill: Look up a technical skill reference doc by name
+  {"reasoning": "...", "action": {"type": "read_skill", "params": {"name": "javascript"}}}
+  Available skills: javascript, browser_automation, email_operations, calendar_operations, messages, applescript
+
 ### Control
 wait: Wait for page to load
   {"reasoning": "...", "action": {"type": "wait", "params": {"seconds": 2}}}

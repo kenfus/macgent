@@ -84,70 +84,13 @@ class DB:
 
     def _migrate(self):
         """Run any pending schema migrations."""
-        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(tasks)").fetchall()}
-        if "notion_page_id" not in cols:
-            self.conn.execute("ALTER TABLE tasks ADD COLUMN notion_page_id TEXT DEFAULT NULL")
-            self.conn.commit()
-
-    # ── Tasks ──
-
-    def create_task(self, title: str, description: str, source: str = "ceo",
-                    priority: int = 3) -> int:
-        cur = self.conn.execute(
-            "INSERT INTO tasks (title, description, source, priority) VALUES (?, ?, ?, ?)",
-            (title, description, source, priority),
-        )
-        self.conn.commit()
-        return cur.lastrowid
-
-    def get_task(self, task_id: int) -> dict | None:
-        row = self.conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
-        return dict(row) if row else None
-
-    def update_task(self, task_id: int, **fields):
-        fields["updated_at"] = datetime.now(timezone.utc).isoformat()
-        sets = ", ".join(f"{k} = ?" for k in fields)
-        vals = list(fields.values()) + [task_id]
-        self.conn.execute(f"UPDATE tasks SET {sets} WHERE id = ?", vals)
-        self.conn.commit()
-
-    def list_tasks(self, status: str | None = None) -> list[dict]:
-        if status:
-            rows = self.conn.execute(
-                "SELECT * FROM tasks WHERE status = ? ORDER BY priority, created_at",
-                (status,),
-            ).fetchall()
-        else:
-            rows = self.conn.execute(
-                "SELECT * FROM tasks ORDER BY priority, created_at",
-            ).fetchall()
-        return [dict(r) for r in rows]
-
-    def next_pending_task(self) -> dict | None:
-        row = self.conn.execute(
-            "SELECT * FROM tasks WHERE status = 'pending' ORDER BY priority, created_at LIMIT 1",
-        ).fetchone()
-        return dict(row) if row else None
-
-    def get_stale_tasks(self, minutes: int = 60) -> list[dict]:
-        rows = self.conn.execute(
-            """SELECT * FROM tasks WHERE status = 'in_progress'
-               AND updated_at < datetime('now', ? || ' minutes')""",
-            (f"-{minutes}",),
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-    def set_notion_page_id(self, task_id: int, page_id: str):
-        self.conn.execute("UPDATE tasks SET notion_page_id = ? WHERE id = ?", (page_id, task_id))
-        self.conn.commit()
-
-    def get_review_tasks(self) -> list[dict]:
-        rows = self.conn.execute(
-            "SELECT * FROM tasks WHERE status = 'review' ORDER BY priority, created_at",
-        ).fetchall()
-        return [dict(r) for r in rows]
+        # Tasks table kept for backwards compat but no longer used.
+        # All task CRUD goes through Notion (notion_actions.py).
+        pass
 
     # ── Messages ──
+    # Note: task_id in messages now stores Notion page_id (string).
+    # SQLite is dynamically typed so this works without schema changes.
 
     def send_message(self, from_role: str, to_role: str, task_id: int | None,
                      content: str) -> int:

@@ -1,98 +1,97 @@
-"""Worker role — executes tasks and updates Notion board."""
+"""Worker role — executes tasks from Notion board and updates progress there.
+
+The Worker NEVER messages the CEO directly. All communication goes through
+the Notion board. The Manager reads it and talks to the CEO.
+"""
 
 import logging
 from macgent.roles.base import BaseRole
 from macgent.prompts.role_prompts import WORKER_LEARN_PROMPT
 from macgent.actions import notion_actions
+from macgent.actions.dispatcher import set_notion_context
 
 logger = logging.getLogger("macgent.roles.worker")
-
-
-def _notify_task_update(config, db, task_id: int):
-    """Send Telegram notification for task update (non-blocking)."""
-    try:
-        from macgent.telegram_bot import sync_notify_task_update
-        sync_notify_task_update(config, db, task_id)
-    except Exception as e:
-        logger.debug(f"Failed to send Telegram notification: {e}")
 
 
 class WorkerRole(BaseRole):
     role_name = "worker"
 
+    @property
+    def _token(self):
+        return self.config.notion_token
+
+    @property
+    def _db_id(self):
+        return self.config.notion_database_id
+
     def tick(self):
-        """Called each heartbeat: check messages, claim and run next task."""
+        """Called each heartbeat: claim and run next Ready task from Notion."""
         logger.info("Worker tick starting")
         self.db.log("worker", "tick_start")
 
-        # Check for manager pings
-        pings = self.db.get_unread_messages("worker")
-        for msg in pings:
-            if msg["from_role"] == "manager":
-                print(f"  Worker: Got ping from Manager: {msg['content'][:80]}")
-        self.db.mark_messages_read("worker")
-
-        # Pick next pending task
-        task = self.db.next_pending_task()
+        task = notion_actions.next_ready_task(self._token, self._db_id)
         if not task:
-            print("  Worker: No pending tasks")
+            print("  Worker: No ready tasks")
             self.db.log("worker", "no_tasks")
             return
 
-        print(f"  Worker: Claiming task #{task['id']}: {task['title']}")
-        self.run_task(task["id"])
+        print(f"  Worker: Claiming task '{task['title']}'")
+        self.run_task(task)
 
         self.db.log("worker", "tick_done")
 
-    def run_task(self, task_id: int):
-        """Execute a task: claim → execute → update Notion → learn."""
-        task = self.db.get_task(task_id)
-        if not task:
-            logger.error(f"Task #{task_id} not found")
-            return
+    def run_task(self, task: dict):
+        """Execute a Notion task: claim → execute → update Notion → learn.
 
-        self.db.log("worker", "task_claimed", task["title"], task_id)
+        Args:
+            task: Notion task dict with at least page_id, title, description.
+        """
+        page_id = task["page_id"]
+        self.db.log("worker", "task_claimed", task["title"], page_id)
 
-        # Mark in progress (SQLite + Notion)
-        self.db.update_task(task_id, status="in_progress")
-        self._update_notion(task, "In Progress")
-        print(f"  Worker: Executing task #{task_id}: {task['title']}")
+        # Set Notion context so the agent's notion_update action works
+        set_notion_context(self._token, page_id)
+
+        # Semantic memory recall before execution
+        recalled = self.memory.recall(self.db, "worker", task["description"], top_k=5)
+        if recalled:
+            print(f"  Worker: Recalled {len(recalled)} relevant memories for '{task['title']}'")
+            for m in recalled[:3]:
+                print(f"    - [{m['category']}] {m['content'][:80]}")
+
+        # Mark In Progress in Notion
+        notion_actions.update_task(self._token, page_id, status="In Progress")
+        print(f"  Worker: Executing task '{task['title']}'")
 
         # Execute
         result = self._execute_task(task)
+
+        # Done or Blocked — worker never sends Telegram, only updates Notion
         success = "status: completed" in result.lower()
+        if success:
+            notion_actions.update_task(
+                self._token, page_id,
+                status="Done", note=result[:500],
+            )
+            self.db.log("worker", "completed", result[:100], page_id)
+        else:
+            notion_actions.update_task(
+                self._token, page_id,
+                status="Blocked", note=result[:500],
+            )
+            self.db.log("worker", "blocked", result[:100], page_id)
 
-        db_status = "completed" if success else "failed"
-        notion_status = "Done" if success else "Failed"
-
-        self.db.update_task(task_id, result=result, status=db_status)
-        # Re-fetch to get latest notion_page_id
-        self._update_notion(self.db.get_task(task_id), notion_status, note=result[:500])
-        self.db.log("worker", db_status, result[:100], task_id)
-
-        print(f"  Worker: Task #{task_id} {db_status}: {result[:80]}")
-        _notify_task_update(self.config, self.db, task_id)
+        print(f"  Worker: Task '{task['title']}' → {'Done' if success else 'Blocked'}: {result[:80]}")
         self._learn_from_task(task, result)
-
-    def _update_notion(self, task: dict, status: str, note: str = ""):
-        """Update task status in Notion if a page_id is linked."""
-        if not task:
-            return
-        page_id = task.get("notion_page_id")
-        if not page_id or not self.config.notion_token:
-            return
-        notion_actions.update_task(
-            self.config.notion_token,
-            page_id,
-            status=status,
-            note=note or None,
-        )
 
     def _execute_task(self, task: dict) -> str:
         """Execute the task using the browser agent."""
         from macgent.agent import Agent
 
-        agent = Agent(self.config, db=self.db, task_id=task["id"])
+        agent = Agent(
+            self.config, db=self.db, task_id=task["page_id"],
+            memory=self.memory, task_description=task["description"],
+        )
         state = agent.run(task["description"])
 
         parts = [f"Status: {state.status}", f"Steps: {len(state.steps)}"]
@@ -123,7 +122,7 @@ class WorkerRole(BaseRole):
                 self.memory.remember(
                     self.db, "worker", data["lesson"],
                     category=data.get("category", "lesson"),
-                    task_id=task.get("id"),
+                    task_id=task.get("page_id"),
                 )
                 print(f"  Worker: Learned — {data['lesson'][:60]}")
         except Exception as e:

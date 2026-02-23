@@ -103,30 +103,56 @@ class MemoryManager:
         self._ensure_default_souls()
 
     def _ensure_default_souls(self):
-        """Create default soul files if they don't exist."""
+        """Create default soul files if neither subfolder nor flat structure exists."""
         self.souls_dir.mkdir(parents=True, exist_ok=True)
         for role, content in DEFAULT_SOULS.items():
-            path = self.souls_dir / f"{role}.md"
-            if not path.exists():
-                path.write_text(content)
-                logger.info(f"Created default soul file: {path}")
+            subfolder = self.souls_dir / role / "soul.md"
+            flat = self.souls_dir / f"{role}.md"
+            if not subfolder.exists() and not flat.exists():
+                flat.write_text(content)
+                logger.info(f"Created default soul file: {flat}")
 
     # ── Soul Files ──
 
     def load_soul(self, role: str) -> str:
-        """Load the soul file content for a role."""
-        path = self.souls_dir / f"{role}.md"
-        if path.exists():
-            return path.read_text()
+        """Load the soul file for a role. Checks {role}/soul.md first, then {role}.md."""
+        subfolder_path = self.souls_dir / role / "soul.md"
+        if subfolder_path.exists():
+            return subfolder_path.read_text()
+        flat_path = self.souls_dir / f"{role}.md"
+        if flat_path.exists():
+            return flat_path.read_text()
         return f"You are the {role} agent."
+
+    def load_curated_memory(self, role: str) -> str:
+        """Load the MEMORY.md curated long-term memory for a role."""
+        path = self.souls_dir / role / "MEMORY.md"
+        return path.read_text() if path.exists() else ""
+
+    def get_heartbeat_instructions(self) -> str:
+        """Load the manager's heartbeat task instructions."""
+        path = self.souls_dir / "manager" / "heartbeat.md"
+        return path.read_text() if path.exists() else ""
+
+    def get_recent_memory(self, days: int = 3) -> str:
+        """Return concatenated memory files for today and past (days-1) days."""
+        parts = []
+        for i in range(days):
+            day = (datetime.date.today() - datetime.timedelta(days=i)).isoformat()
+            path = self.memories_dir / f"memory-{day}.md"
+            if path.exists():
+                content = path.read_text().strip()
+                if content:
+                    parts.append(content)
+        return "\n\n---\n\n".join(parts)
 
     # ── Short-term Memory (delegates to DB) ──
 
-    def get_short_term(self, db, task_id: int, role: str | None = None,
+    def get_short_term(self, db, task_id, role: str | None = None,
                        limit: int = 10) -> list[dict]:
         return db.get_short_term(task_id, role, limit)
 
-    def record_turn(self, db, task_id: int, role: str, turn_type: str, content: str):
+    def record_turn(self, db, task_id, role: str, turn_type: str, content: str):
         turns = db.get_short_term(task_id, role)
         turn_number = len(turns) + 1
         db.record_turn(task_id, role, turn_type, content, turn_number)
@@ -182,7 +208,7 @@ class MemoryManager:
                 logger.error(f"Failed to save FAISS index: {e}")
 
     def remember(self, db, role: str, content: str, category: str = "lesson",
-                 task_id: int | None = None, confidence: float = 1.0):
+                 task_id=None, confidence: float = 1.0):
         """Store a memory: embed with fastembed, store vector in FAISS, text in SQLite."""
         embedder = self._get_embedder()
         index = self._get_index(db)
@@ -236,9 +262,36 @@ class MemoryManager:
 
     # ── Context Building ──
 
-    def build_context(self, db, role: str, task_id: int | None = None,
+    def load_skills(self) -> str:
+        """Load all shared skill files from souls/skills/. Returns combined markdown."""
+        skills_dir = self.souls_dir / "skills"
+        if not skills_dir.exists():
+            return ""
+        parts = []
+        for path in sorted(skills_dir.glob("*.md")):
+            content = path.read_text().strip()
+            if content:
+                parts.append(content)
+        return "\n\n---\n\n".join(parts)
+
+    def list_skill_names(self) -> list[str]:
+        """Return names of available skill reference docs (from repo skills/ dir)."""
+        skills_dir = self.souls_dir.parent / "skills"
+        if not skills_dir.exists():
+            return []
+        return [p.stem for p in sorted(skills_dir.glob("*.md")) if p.stem != "README"]
+
+    def read_skill(self, name: str) -> str:
+        """Read a skill reference doc by name (e.g. 'javascript' → skills/javascript.md)."""
+        skills_dir = self.souls_dir.parent / "skills"
+        path = skills_dir / f"{name}.md"
+        if path.exists():
+            return path.read_text()
+        return f"Skill '{name}' not found. Available: {', '.join(self.list_skill_names())}"
+
+    def build_context(self, db, role: str, task_id=None,
                       task_description: str = "") -> str:
-        """Build full context for an agent: soul + short-term + long-term memories."""
+        """Build full context: soul + skills + curated memory + recent daily logs + semantic recall."""
         parts = []
 
         # 1. Soul
@@ -246,7 +299,22 @@ class MemoryManager:
         if soul:
             parts.append(soul)
 
-        # 2. Short-term memory (recent turns for this task)
+        # 2. Shared skills (souls/skills/*.md) — always loaded
+        skills = self.load_skills()
+        if skills:
+            parts.append("\n---\n# Skills Reference\n\n" + skills)
+
+        # 3. Curated long-term memory (MEMORY.md)
+        curated = self.load_curated_memory(role)
+        if curated:
+            parts.append("\n## Curated Memory (MEMORY.md)\n" + curated)
+
+        # 4. Recent daily logs (today + last 2 days)
+        recent = self.get_recent_memory(days=3)
+        if recent:
+            parts.append("\n## Recent Daily Logs\n" + recent)
+
+        # 5. Short-term memory (recent turns for this task)
         if task_id:
             turns = self.get_short_term(db, task_id, limit=10)
             if turns:
@@ -254,7 +322,7 @@ class MemoryManager:
                 for t in turns:
                     parts.append(f"[{t['role']}] ({t['type']}): {t['content']}")
 
-        # 3. Long-term memories (semantic recall)
+        # 6. Long-term memories (semantic recall)
         if task_description:
             memories = self.recall(db, role, task_description, top_k=5)
             if memories:
@@ -289,7 +357,7 @@ class MemoryManager:
         path = self.memories_dir / f"memory-{today}.md"
         return path.read_text() if path.exists() else ""
 
-    def embed_past_logs(self, db, days: int = 7):
+    def embed_past_logs(self, db, days: int = 3):
         """Embed recent daily log files into FAISS (call once on startup)."""
         for i in range(days):
             day = (datetime.date.today() - datetime.timedelta(days=i)).isoformat()

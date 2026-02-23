@@ -1,8 +1,6 @@
 """Telegram bot integration for macgent multi-agent system."""
 
 import logging
-import json
-from typing import Optional
 from datetime import datetime, timezone
 import httpx
 import asyncio
@@ -50,43 +48,28 @@ class TelegramBot:
             logger.error(f"Failed to get updates: {e}")
             return []
 
-    async def process_message(self, message: dict) -> Optional[int]:
-        """Process incoming Telegram message and create a task."""
+    async def process_message(self, message: dict) -> None:
+        """Route incoming Telegram message to the manager for LLM enhancement."""
         text = message.get("text", "").strip()
         chat_id = str(message["chat"]["id"])
         user_id = message["from"]["id"]
         user_name = message["from"].get("first_name", "User")
 
         if not text:
-            return None
+            return
 
-        logger.info(f"Message from {user_name} (ID {user_id}): {text[:80]}")
+        logger.info(f"Active task from {user_name} (ID {user_id}): {text[:80]}")
 
-        # Create task
-        title = text[:80]
-        description = text
-        task_id = self.db.create_task(
-            title=title,
-            description=description,
-            source=f"telegram_{user_id}",
-            priority=2,
-        )
+        # Store as CEO → manager message so manager's LLM flow handles it:
+        # enhance → clarify if needed → create Notion task as "Ready" → spawn worker
+        self.db.send_message("ceo", "manager", task_id=None, content=text)
 
-        # Store chat_id and user_id in task metadata for responses
-        self.db.conn.execute(
-            "UPDATE tasks SET review_note = ? WHERE id = ?",
-            (json.dumps({"chat_id": chat_id, "user_id": user_id, "user_name": user_name}), task_id)
-        )
-        self.db.conn.commit()
-
-        # Wake the manager for immediate processing
+        # Wake the manager immediately for active task processing
         self._wake_manager()
 
-        # Send acknowledgment
-        await self.send_message(chat_id, f"✓ Task #{task_id} received: {title}\nProcessing...")
-
-        logger.info(f"Created task #{task_id} from Telegram message")
-        return task_id
+        # Brief acknowledgment — manager will send the real response via Telegram
+        await self.send_message(chat_id, "On it! I'll get back to you shortly.")
+        logger.info(f"Queued CEO message for manager processing")
 
     def _wake_manager(self) -> None:
         """Signal the manager to wake up and process this task immediately."""
@@ -144,59 +127,6 @@ class TelegramBot:
         except Exception as e:
             logger.error(f"Telegram polling error: {e}")
             raise
-
-
-async def notify_task_update(config: Config, db: DB, task_id: int) -> None:
-    """Send task update notification via Telegram."""
-    try:
-        task = db.get_task(task_id)
-        if not task:
-            return
-
-        # Try to parse chat_id from review_note
-        chat_id = None
-        if task.get("review_note"):
-            try:
-                metadata = json.loads(task["review_note"])
-                chat_id = metadata.get("chat_id")
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-        if not chat_id:
-            return
-
-        bot = TelegramBot(config, db)
-        status_emoji = {
-            "pending": "⏳",
-            "in_progress": "🔄",
-            "completed": "✅",
-            "failed": "❌",
-            "escalated": "⚠️",
-            "review": "👀",
-        }.get(task["status"], "•")
-
-        message = f"{status_emoji} Task #{task_id}\nStatus: {task['status']}"
-        if task.get("result"):
-            message += f"\n\nResult: {task['result'][:200]}"
-        if task.get("review_note") and task["status"] != "pending":
-            try:
-                metadata = json.loads(task["review_note"])
-                if "review_feedback" in metadata:
-                    message += f"\n\nFeedback: {metadata['review_feedback']}"
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-        await bot.send_message(chat_id, message)
-    except Exception as e:
-        logger.error(f"Failed to send task update: {e}")
-
-
-def sync_notify_task_update(config: Config, db: DB, task_id: int) -> None:
-    """Synchronous wrapper for notify_task_update."""
-    try:
-        asyncio.run(notify_task_update(config, db, task_id))
-    except Exception as e:
-        logger.error(f"Failed to notify task update: {e}")
 
 
 async def _send_text(config: Config, text: str) -> None:

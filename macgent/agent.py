@@ -26,7 +26,8 @@ NAVIGATION_ACTIONS = {"navigate", "go_back", "go_forward", "click", "click_eleme
 
 
 class Agent:
-    def __init__(self, config: Config, db=None, task_id: int | None = None):
+    def __init__(self, config: Config, db=None, task_id: str | None = None,
+                 memory=None, task_description: str = ""):
         self.config = config
         self.db = db
         self.task_id = task_id
@@ -41,18 +42,24 @@ class Agent:
                 config.vision_model, config.vision_api_type,
             )
 
-        # Load worker soul so it guides every step of browser execution
-        self.soul = self._load_soul("worker")
+        # Build full worker soul: soul + skills + memory + semantic recall
+        if memory and db:
+            self.soul = memory.build_context(
+                db, "worker", task_id=task_id, task_description=task_description
+            )
+            logger.info("Loaded worker soul via MemoryManager (full context)")
+        else:
+            self.soul = self._load_soul("worker")
 
     def _load_soul(self, role: str) -> str:
-        """Load soul file from souls_dir, falling back silently if not found."""
+        """Load soul file — checks {role}/soul.md first, then {role}.md."""
         from pathlib import Path
-        soul_path = Path(self.config.souls_dir) / f"{role}.md"
-        if soul_path.exists():
-            soul = soul_path.read_text()
-            logger.info(f"Loaded {role} soul from {soul_path}")
-            return soul
-        logger.debug(f"No soul file for {role} at {soul_path}")
+        souls_dir = Path(self.config.souls_dir)
+        for path in [souls_dir / role / "soul.md", souls_dir / f"{role}.md"]:
+            if path.exists():
+                logger.info(f"Loaded {role} soul from {path}")
+                return path.read_text()
+        logger.debug(f"No soul file for {role} in {souls_dir}")
         return ""
 
     def run(self, task: str) -> AgentState:
