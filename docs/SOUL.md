@@ -43,7 +43,7 @@ The soul becomes the **system prompt** for the LLM, making it the agent's consti
 - Handle errors and retry (up to 3 rounds)
 
 **Key Behaviors**:
-- Always dismisses popups first (before other actions)
+- Always dismisses popups first (before other actions), such as cookies (accept them), or ADs, or logins (such as google or instagram).
 - Uses element [index] for clicking (not text)
 - Doesn't log in unless explicitly asked
 - Sends unclear tasks to Stakeholder instead of guessing

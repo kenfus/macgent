@@ -16,10 +16,13 @@ _CORE_SKILLS_DIR = Path(__file__).parent.parent / "skills"
 
 
 def set_dispatch_config(config):
-    """Set config for dispatcher actions (Notion token, database ID, workspace dir)."""
+    """Set config for dispatcher actions (Notion token, database ID, workspace dir, LLM)."""
     _dispatch_config["notion_token"] = getattr(config, "notion_token", "")
     _dispatch_config["notion_database_id"] = getattr(config, "notion_database_id", "")
     _dispatch_config["workspace_dir"] = getattr(config, "workspace_dir", "")
+    _dispatch_config["reasoning_model"] = getattr(config, "reasoning_model", "")
+    _dispatch_config["reasoning_api_key"] = getattr(config, "reasoning_api_key", "")
+    _dispatch_config["reasoning_api_base"] = getattr(config, "reasoning_api_base", "")
 
 
 def _get_workspace_dir() -> Path:
@@ -284,6 +287,24 @@ def dispatch(action: Action) -> str:
             token = _dispatch_config["notion_token"]
             db_id = _dispatch_config["notion_database_id"]
             return notion_actions.notion_schema(token, db_id)
+
+        elif t == "browser_task":
+            # Delegate a full browsing task to browser-use (Playwright-based).
+            # The agent handles navigation, clicks, and extraction internally.
+            task_desc = p.get("task", p.get("description", ""))
+            if not task_desc:
+                return "ERROR: browser_task needs 'task'"
+            try:
+                from macgent.actions.browser_use_action import run_browser_task
+
+                class _Cfg:
+                    reasoning_model = _dispatch_config.get("reasoning_model", "")
+                    reasoning_api_key = _dispatch_config.get("reasoning_api_key", "")
+                    reasoning_api_base = _dispatch_config.get("reasoning_api_base", "")
+
+                return run_browser_task(_Cfg(), task_desc)
+            except Exception as e:
+                return f"ERROR: browser_task: {e}"
 
         elif t == "wait":
             seconds = float(p.get("seconds", 2))

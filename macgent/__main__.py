@@ -149,14 +149,16 @@ def main():
     # Interactive setup wizard for missing Telegram config (terminal only, no LLM)
     config = _run_setup_wizard(config, env_file)
 
-    # Detect legacy mode: if first arg isn't a known subcommand, run single agent
+    # Detect legacy mode: if first arg isn't a known subcommand, run browser-use agent
     SUBCOMMANDS = {"task", "daemon", "status", "log", "answer", "soul", "-h", "--help"}
     if len(sys.argv) > 1 and sys.argv[1] not in SUBCOMMANDS:
         task_text = " ".join(sys.argv[1:])
-        from macgent.agent import Agent
-        agent = Agent(config)
-        state = agent.run(task_text)
-        _print_result(state)
+        from macgent.actions.browser_use_action import run_browser_task
+        result = run_browser_task(config, task_text)
+        print(f"\n{'='*60}")
+        print(f"Task: {task_text}")
+        print(f"{'='*60}")
+        print(result)
         return
 
     import argparse

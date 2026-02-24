@@ -52,14 +52,14 @@ class Agent:
             self.soul = self._load_soul("worker")
 
     def _load_soul(self, role: str) -> str:
-        """Load soul file — checks {role}/soul.md first, then {role}.md."""
+        """Load soul file from workspace/{role}/soul.md."""
         from pathlib import Path
-        souls_dir = Path(self.config.souls_dir)
-        for path in [souls_dir / role / "soul.md", souls_dir / f"{role}.md"]:
-            if path.exists():
-                logger.info(f"Loaded {role} soul from {path}")
-                return path.read_text()
-        logger.debug(f"No soul file for {role} in {souls_dir}")
+        workspace = Path(self.config.workspace_dir)
+        path = workspace / role / "soul.md"
+        if path.exists():
+            logger.info(f"Loaded {role} soul from {path}")
+            return path.read_text()
+        logger.debug(f"No soul file for {role} at {path}")
         return ""
 
     def run(self, task: str) -> AgentState:

@@ -84,7 +84,7 @@ def get_next_action(client: LLMClient, task: str, observation: Observation,
         response_text = client.chat(
             messages=messages,
             system=system,
-            max_tokens=1024,
+            max_tokens=2048,
             temperature=0.0,
         )
     except Exception as e:

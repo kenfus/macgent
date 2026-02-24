@@ -22,7 +22,11 @@ class TelegramBot:
     async def _api_call(self, method: str, **kwargs) -> dict:
         """Make API call to Telegram Bot API."""
         url = f"{self.api_base}/{method}"
-        async with httpx.AsyncClient(timeout=30) as client:
+        # httpx timeout must exceed Telegram's long-poll timeout or ReadTimeout fires first.
+        # getUpdates passes timeout=30 to Telegram, so we need httpx > 30s.
+        poll_timeout = kwargs.get("timeout", 0)
+        http_timeout = max(30, poll_timeout + 10)
+        async with httpx.AsyncClient(timeout=http_timeout) as client:
             response = await client.post(url, json=kwargs)
             result = response.json()
             if not result.get("ok"):

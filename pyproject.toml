@@ -9,6 +9,8 @@ dependencies = [
     "python-dotenv>=1.0",
     "faiss-cpu>=1.7",
     "fastembed>=0.4",
+    "browser-use>=0.1",
+    "playwright>=1.58.0",
 ]
 
 [tool.uv]

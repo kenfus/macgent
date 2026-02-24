@@ -6,7 +6,7 @@ import logging
 logger = logging.getLogger("macgent.safari")
 
 
-def run_osascript(script: str, timeout: int = 10) -> str:
+def run_osascript(script: str, timeout: int = 15) -> str:
     """Execute AppleScript and return stdout. Retries once on timeout."""
     for attempt in range(2):
         try:
@@ -20,8 +20,8 @@ def run_osascript(script: str, timeout: int = 10) -> str:
         except subprocess.TimeoutExpired:
             if attempt == 0:
                 logger.warning(f"osascript timed out after {timeout}s, retrying...")
-                time.sleep(2)
-                timeout = int(timeout * 1.5)
+                time.sleep(1)
+                timeout = timeout * 2
                 continue
             raise RuntimeError(f"osascript timed out after {timeout}s (Safari may be busy)")
 
@@ -34,7 +34,7 @@ def get_safari_title() -> str:
     return run_osascript('tell application "Safari" to get name of current tab of front window')
 
 
-def execute_js_in_safari(js_code: str, timeout: int = 15) -> str:
+def execute_js_in_safari(js_code: str, timeout: int = 30) -> str:
     """Execute JavaScript in the current Safari tab via AppleScript."""
     escaped = js_code.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
     script = f'tell application "Safari" to do JavaScript "{escaped}" in current tab of front window'
