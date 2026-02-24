@@ -1,13 +1,53 @@
 import sys
 import logging
+import shutil
+from pathlib import Path
+
+
+def _setup_workspace(workspace_dir: str):
+    """Copy missing base template files from macgent/workspace/ → workspace/.
+
+    Only copies files that don't exist yet — never overwrites the agent's edits.
+    Base templates live in macgent/workspace/ (committed, read-only at runtime).
+    The runtime workspace lives in workspace/ (agent writes here).
+    """
+    base_dir = Path(__file__).parent / "workspace"
+    dest_dir = Path(workspace_dir)
+
+    if not base_dir.exists():
+        return
+
+    for src in base_dir.rglob("*"):
+        if not src.is_file():
+            continue
+        rel = src.relative_to(base_dir)
+        dst = dest_dir / rel
+        if not dst.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+
+
+def _setup_logging(log_file: str):
+    """Configure logging: INFO to console, DEBUG to log file (captures everything)."""
+    fmt = "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+
+    # Console: INFO and above
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO)
+    console.setFormatter(logging.Formatter(fmt))
+    root.addHandler(console)
+
+    # File: DEBUG and above (LLM calls, actions, responses, errors)
+    Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+    fh = logging.FileHandler(log_file, encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(logging.Formatter(fmt))
+    root.addHandler(fh)
 
 
 def main():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    )
-
     from dotenv import load_dotenv, find_dotenv
     load_dotenv(find_dotenv(usecwd=True))
 
@@ -16,8 +56,13 @@ def main():
 
     # Ensure data directories exist
     MACGENT_DIR.mkdir(parents=True, exist_ok=True)
-    from pathlib import Path
-    Path(config.souls_dir).mkdir(parents=True, exist_ok=True)
+    Path(config.workspace_dir).mkdir(parents=True, exist_ok=True)
+
+    # Copy any missing base template files to the runtime workspace (never overwrites)
+    _setup_workspace(config.workspace_dir)
+
+    # Set up logging (file + console) now that we know the log path
+    _setup_logging(config.log_file)
 
     if not config.reasoning_api_key:
         print("ERROR: Set REASONING_API_KEY in .env file")
@@ -299,9 +344,9 @@ def _answer_escalation(config, page_id: str, text: str):
 
 
 def _soul_command(config, action: str, role: str):
-    """View or edit soul files."""
+    """View or edit soul files (workspace/{role}/soul.md)."""
     from pathlib import Path
-    soul_path = Path(config.souls_dir) / f"{role}.md"
+    soul_path = Path(config.workspace_dir) / role / "soul.md"
     if action == "show":
         if soul_path.exists():
             print(soul_path.read_text())
@@ -310,11 +355,7 @@ def _soul_command(config, action: str, role: str):
     elif action == "edit":
         import os
         editor = os.getenv("EDITOR", "nano")
-        if not soul_path.exists():
-            # Create default soul
-            from macgent.memory import MemoryManager
-            mm = MemoryManager(config)
-            mm._ensure_default_souls()
+        soul_path.parent.mkdir(parents=True, exist_ok=True)
         os.execvp(editor, [editor, str(soul_path)])
 
 

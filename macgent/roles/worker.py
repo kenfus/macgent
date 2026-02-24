@@ -49,7 +49,7 @@ class WorkerRole(BaseRole):
 
         if not ready_task:
             print("  Worker: No ready tasks")
-            self.db.log("worker", "no_tasks")
+            logger.debug("Worker tick: no ready tasks found")
             return
 
         # Find the title (could be any property name)
@@ -63,7 +63,7 @@ class WorkerRole(BaseRole):
 
         print(f"  Worker: Claiming task '{title}'")
         self.run_task(ready_task)
-        self.db.log("worker", "tick_done")
+        logger.info(f"Worker tick done: completed '{title}'")
 
     def run_task(self, task: dict):
         """Execute a Notion task: claim -> execute -> learn.
@@ -85,7 +85,7 @@ class WorkerRole(BaseRole):
         if not title:
             title = str(page_id)[:20]
 
-        self.db.log("worker", "task_claimed", title, page_id)
+        logger.info(f"Worker claiming task: '{title}' (page_id={page_id})")
 
         # Semantic memory recall before execution
         recall_text = description or title
@@ -100,7 +100,7 @@ class WorkerRole(BaseRole):
         # Execute — the Agent gets page_id in its context so it can use notion_update
         result = self._execute_task(task, title, description)
 
-        self.db.log("worker", "task_done", result[:100], page_id)
+        logger.info(f"Worker task done: '{title}' result={result[:100]}")
         print(f"  Worker: Task '{title}' finished: {result[:80]}")
         self._learn_from_task(title, page_id, result)
 

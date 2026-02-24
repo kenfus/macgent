@@ -208,5 +208,6 @@ __marimo__/
 
 # macgent runtime data (local only, not committed)
 data/
+workspace/
 *.faiss
 *.db

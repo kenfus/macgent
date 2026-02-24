@@ -95,16 +95,6 @@ notion_schema: Inspect the database schema (properties and options)
 
 Refer to your Notion skill doc for property names, status values, and filter syntax.
 
-### Skills & Identity
-read_skill: Look up a skill reference doc
-  {"reasoning": "...", "action": {"type": "read_skill", "params": {"name": "javascript"}}}
-
-write_skill: Write or update a learned skill doc
-  {"reasoning": "...", "action": {"type": "write_skill", "params": {"name": "notion", "content": "# My Notion Skill\n..."}}}
-
-write_identity: Save your identity (marks bootstrap complete)
-  {"reasoning": "...", "action": {"type": "write_identity", "params": {"role": "manager", "content": "# Identity\n..."}}}
-
 ### Control
 wait: Wait for page to load
   {"reasoning": "...", "action": {"type": "wait", "params": {"seconds": 2}}}

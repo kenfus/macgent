@@ -9,22 +9,25 @@ from macgent.perception.safari import run_osascript, execute_js_in_safari
 logger = logging.getLogger("macgent.dispatcher")
 
 # Config reference — set by the role before spawning an Agent
-_dispatch_config = {"notion_token": "", "notion_database_id": "", "souls_dir": ""}
+_dispatch_config = {"notion_token": "", "notion_database_id": "", "workspace_dir": ""}
+
+# Core skills are shipped inside the package (browser, macos, communication) — fixed
+_CORE_SKILLS_DIR = Path(__file__).parent.parent / "skills"
 
 
 def set_dispatch_config(config):
-    """Set config for dispatcher actions (Notion token, database ID, souls dir)."""
+    """Set config for dispatcher actions (Notion token, database ID, workspace dir)."""
     _dispatch_config["notion_token"] = getattr(config, "notion_token", "")
     _dispatch_config["notion_database_id"] = getattr(config, "notion_database_id", "")
-    _dispatch_config["souls_dir"] = getattr(config, "souls_dir", "")
+    _dispatch_config["workspace_dir"] = getattr(config, "workspace_dir", "")
 
 
-def _get_souls_dir() -> Path:
-    """Get souls directory from config or default."""
-    sd = _dispatch_config.get("souls_dir", "")
-    if sd:
-        return Path(sd)
-    return Path(__file__).parent.parent.parent / "souls"
+def _get_workspace_dir() -> Path:
+    """Get workspace directory from config or default."""
+    wd = _dispatch_config.get("workspace_dir", "")
+    if wd:
+        return Path(wd)
+    return Path(__file__).parent.parent.parent / "workspace"
 
 
 def dispatch(action: Action) -> str:
@@ -167,37 +170,59 @@ def dispatch(action: Action) -> str:
                 body=p["body"],
             )
 
-        elif t == "read_skill":
-            souls_dir = _get_souls_dir()
-            skills_dir = souls_dir / "skills"
-            name = p.get("name", "")
-            path = skills_dir / f"{name}.md"
-            if path.exists():
-                return path.read_text()
-            available = [f.stem for f in sorted(skills_dir.glob("*.md")) if f.stem != "README"]
-            return f"Skill '{name}' not found. Available: {', '.join(available)}"
+        elif t == "read_file":
+            # Read a file in the workspace. Optional offset/limit for line ranges.
+            rel = p.get("path", "")
+            if not rel:
+                return "ERROR: read_file needs 'path'"
+            path = (_get_workspace_dir() / rel).resolve()
+            if not str(path).startswith(str(_get_workspace_dir().resolve())):
+                return "ERROR: path must be within workspace"
+            if not path.exists():
+                return f"File not found: {rel}"
+            lines = path.read_text().splitlines(keepends=True)
+            offset = int(p["offset"]) - 1 if "offset" in p else 0  # 1-indexed → 0-indexed
+            limit = int(p["limit"]) if "limit" in p else len(lines)
+            chunk = lines[offset:offset + limit]
+            # Return with line numbers (like cat -n), so edit_file references are clear
+            numbered = "".join(f"{offset + i + 1:4d}  {line}" for i, line in enumerate(chunk))
+            return numbered or "(empty)"
 
-        elif t == "write_skill":
-            souls_dir = _get_souls_dir()
-            name = p.get("name", "")
+        elif t == "write_file":
+            # Write (overwrite) a file in the workspace.
+            rel = p.get("path", "")
             content = p.get("content", "")
-            if not name or not content:
-                return "ERROR: write_skill needs 'name' and 'content'"
-            path = souls_dir / "skills" / f"{name}.md"
+            if not rel:
+                return "ERROR: write_file needs 'path' and 'content'"
+            path = (_get_workspace_dir() / rel).resolve()
+            if not str(path).startswith(str(_get_workspace_dir().resolve())):
+                return "ERROR: path must be within workspace"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content)
-            return f"Skill '{name}' written to {path}"
+            logger.info(f"File written: {rel} ({len(content)} chars)")
+            return f"Written: {rel}"
 
-        elif t == "write_identity":
-            souls_dir = _get_souls_dir()
-            role = p.get("role", "manager")
-            content = p.get("content", "")
-            if not content:
-                return "ERROR: write_identity needs 'content'"
-            path = souls_dir / role / "IDENTITY.md"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content)
-            return f"Identity written for {role}"
+        elif t == "edit_file":
+            # Replace exact text in a file — like a precise find-and-replace.
+            # old_string must match exactly (including whitespace/indentation).
+            rel = p.get("path", "")
+            old = p.get("old_string", "")
+            new = p.get("new_string", "")
+            if not rel or old == "":
+                return "ERROR: edit_file needs 'path', 'old_string', and 'new_string'"
+            path = (_get_workspace_dir() / rel).resolve()
+            if not str(path).startswith(str(_get_workspace_dir().resolve())):
+                return "ERROR: path must be within workspace"
+            if not path.exists():
+                return f"File not found: {rel}"
+            content = path.read_text()
+            if old not in content:
+                return f"ERROR: old_string not found in {rel}"
+            if content.count(old) > 1:
+                return f"ERROR: old_string matches {content.count(old)} places — make it more specific"
+            path.write_text(content.replace(old, new, 1))
+            logger.info(f"File edited: {rel}")
+            return f"Edited: {rel}"
 
         # ── Notion (generic) ──
 

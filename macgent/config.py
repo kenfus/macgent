@@ -48,16 +48,18 @@ class Config:
 
     # Paths
     db_path: str = ""
-    souls_dir: str = ""
+    workspace_dir: str = ""    # agent runtime: role files + learned skills
+    log_file: str = ""         # path to macgent.log
     faiss_path: str = ""
-    memories_dir: str = ""  # daily memory .md files
+    memories_dir: str = ""     # daily memory .md files
 
     @classmethod
     def from_env(cls) -> "Config":
         macgent_dir = Path(os.getenv("MACGENT_DIR", str(MACGENT_DIR)))
-        # Default souls dir: use repo's souls/ if it exists, otherwise ~/.macgent/souls
-        _repo_souls = Path(__file__).parent.parent / "souls"
-        default_souls = str(_repo_souls) if _repo_souls.exists() else str(macgent_dir / "souls")
+        # Default workspace dir: use repo's workspace/ if it exists, else ~/.macgent/workspace
+        _repo_workspace = Path(__file__).parent.parent / "workspace"
+        default_workspace = str(_repo_workspace) if _repo_workspace.exists() else str(macgent_dir / "workspace")
+        default_log = str(Path(default_workspace) / "macgent.log")
         return cls(
             reasoning_api_base=os.getenv("REASONING_API_BASE", cls.reasoning_api_base),
             reasoning_api_key=os.getenv("REASONING_API_KEY", ""),
@@ -79,7 +81,8 @@ class Config:
             notion_token=os.getenv("NOTION_TOKEN", ""),
             notion_database_id=os.getenv("NOTION_PLANNING_DATABASE_ID", ""),
             db_path=os.getenv("MACGENT_DB_PATH", str(macgent_dir / "macgent.db")),
-            souls_dir=os.getenv("MACGENT_SOULS_DIR", default_souls),
+            workspace_dir=os.getenv("MACGENT_WORKSPACE_DIR", default_workspace),
+            log_file=os.getenv("MACGENT_LOG_FILE", default_log),
             faiss_path=os.getenv("MACGENT_FAISS_PATH", str(macgent_dir / "memory.faiss")),
             memories_dir=os.getenv("MACGENT_MEMORIES_DIR", str(macgent_dir / "memories")),
         )

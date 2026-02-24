@@ -38,7 +38,7 @@ class ManagerRole(BaseRole):
 
     def _is_bootstrapped(self) -> bool:
         """Check if bootstrap has been completed (IDENTITY.md exists)."""
-        identity_path = Path(self.config.souls_dir) / "manager" / "IDENTITY.md"
+        identity_path = Path(self.config.workspace_dir) / "manager" / "IDENTITY.md"
         return identity_path.exists()
 
     def should_wake_early(self) -> bool:
@@ -55,7 +55,6 @@ class ManagerRole(BaseRole):
     def tick(self) -> bool:
         """One heartbeat cycle. Returns True if something happened."""
         logger.info("Manager tick starting")
-        self.db.log("manager", "tick_start")
 
         woken_early = self.should_wake_early()
         if woken_early:
@@ -87,14 +86,15 @@ class ManagerRole(BaseRole):
         # 3. Build the task prompt
         if not self._is_bootstrapped():
             # First time: load bootstrap instructions
-            bootstrap_path = Path(self.config.souls_dir) / "manager" / "bootstrap.md"
+            bootstrap_path = Path(self.config.workspace_dir) / "manager" / "bootstrap.md"
             if bootstrap_path.exists():
                 task_prompt = bootstrap_path.read_text()
             else:
                 task_prompt = "No bootstrap.md found. Introduce yourself to the CEO and set up."
+            logger.info("Manager running bootstrap (no IDENTITY.md found)")
         else:
             # Normal heartbeat
-            heartbeat_path = Path(self.config.souls_dir) / "manager" / "heartbeat.md"
+            heartbeat_path = Path(self.config.workspace_dir) / "manager" / "heartbeat.md"
             task_prompt = heartbeat_path.read_text() if heartbeat_path.exists() else "Run heartbeat checks."
 
             # Add CEO messages
@@ -130,9 +130,9 @@ class ManagerRole(BaseRole):
             if "HEARTBEAT_OK" in response:
                 if not anything_happened:
                     print("HEARTBEAT_OK")
-                    self.db.log("manager", "tick_done", "HEARTBEAT_OK")
+                    logger.debug("Manager tick: HEARTBEAT_OK (nothing to do)")
                 else:
-                    self.db.log("manager", "tick_done")
+                    logger.info("Manager tick done (actions taken)")
                 return anything_happened
 
             # Parse actions from response
@@ -160,9 +160,8 @@ class ManagerRole(BaseRole):
                 anything_happened = True
 
                 # Log significant actions
-                if action_type in ("notion_create", "notion_update", "send_telegram",
-                                   "write_skill", "write_identity"):
-                    self.db.log("manager", action_type, str(params)[:200])
+                if action_type in ("notion_create", "notion_update", "send_telegram", "write_file"):
+                    logger.info(f"Manager action: {action_type} params={str(params)[:200]}")
 
             # Feed results back to LLM
             result_text = "\n".join(results) if results else "(no actions executed)"
@@ -172,10 +171,10 @@ class ManagerRole(BaseRole):
         # Max turns reached or LLM stopped
         if anything_happened:
             self.memory.write_daily_log(self.db, "Heartbeat completed with actions.")
-            self.db.log("manager", "tick_done")
+            logger.info("Manager tick done (max turns or LLM stopped)")
         else:
             print("HEARTBEAT_OK")
-            self.db.log("manager", "tick_done", "HEARTBEAT_OK")
+            logger.debug("Manager tick: HEARTBEAT_OK (max turns, nothing happened)")
         return anything_happened
 
     def handle_new_ceo_task(self, task_text: str) -> str | None:
@@ -230,7 +229,7 @@ class ManagerRole(BaseRole):
                         pass
 
             if page_id:
-                self.db.log("manager", "task_created", task_text[:100], page_id)
+                logger.info(f"Manager created task: {task_text[:100]} (page_id={page_id})")
                 self.memory.write_daily_log(self.db, f"Created task from CLI: {task_text[:80]}")
                 break
 

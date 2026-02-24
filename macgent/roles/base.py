@@ -23,17 +23,23 @@ class BaseRole:
     def call_llm(self, messages: list[dict], system: str = "",
                  max_tokens: int = 2048, temperature: float = 0.0) -> str:
         """Call LLM with automatic fallback on 429/500/timeout."""
+        # Log the outgoing prompt at DEBUG level (visible in log file)
+        last_msg = messages[-1]["content"] if messages else ""
+        logger.debug(
+            f"[{self.role_name}] LLM call | model_chain={self.model_chain[0]}... | "
+            f"msgs={len(messages)} | last_msg={last_msg[:200]}"
+        )
+
         last_error = None
         for model in self.model_chain:
             try:
                 result = self._call_openai(model, messages, system, max_tokens, temperature)
+                logger.debug(f"[{self.role_name}] LLM response ({model}): {result[:300]}")
                 return result
             except (httpx.HTTPStatusError, httpx.TimeoutException) as e:
                 last_error = e
                 status = getattr(e.response, "status_code", None) if hasattr(e, "response") else None
                 logger.warning(f"[{self.role_name}] Model {model} failed (status={status}): {e}")
-                self.db.log(self.role_name, "model_fallback",
-                            f"{model} -> next (status={status})")
                 continue
             except Exception as e:
                 last_error = e

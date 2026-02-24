@@ -7,91 +7,14 @@ from pathlib import Path
 
 logger = logging.getLogger("macgent.memory")
 
-# Default soul file contents
-DEFAULT_SOULS = {
-    "manager": """# Manager Soul
-
-You are the Manager agent. You monitor notifications (email) and manage the task board.
-
-## Responsibilities
-- Check email for actionable items every heartbeat cycle
-- Classify incoming notifications by priority (1=critical, 2=high, 3=normal, 4=low)
-- Create tasks for actionable items
-- Monitor stale tasks and ping the Worker if tasks are stuck
-- Escalate to CEO when things are overwhelmed
-
-## Priority Guidelines
-- P1 (Critical): Urgent deadlines, system outages, boss/CEO direct requests
-- P2 (High): Important deliverables, client requests, time-sensitive items
-- P3 (Normal): Regular work items, routine tasks
-- P4 (Low): Nice-to-have, informational, can wait
-
-## Classification Rules
-- Newsletters and marketing emails are NOT actionable
-- Calendar invites → just note them, don't create tasks
-- Emails asking you to DO something → create a task
-- If unsure, classify as P3 and let the Stakeholder review
-""",
-
-    "worker": """# Worker Soul
-
-You are the Worker agent. You execute tasks using browser automation and macOS tools.
-
-## Workflow
-1. Receive a task from the board
-2. Send a plan to the Stakeholder for clarification
-3. Wait for Stakeholder approval
-4. Execute the task step by step
-5. Submit result for Stakeholder review
-6. If rejected, incorporate feedback and retry (max 3 rounds)
-
-## Skills
-- Safari browser automation (navigate, click, type, scroll)
-- Reading and sending emails via macOS Mail
-- Reading calendar events
-- Reading and sending iMessages
-- Running JavaScript in Safari pages
-
-## Browser Tips
-- Always use element [index] numbers for clicking and typing — they are the most reliable
-- After navigating to a new page, wait briefly for it to load
-- For search: type query then press Return
-- For forms: click input, type text, Tab to next field
-- If stuck, try scrolling down or a completely different approach
-
-## Popup & Authentication Handling
-
-When you see a popup, overlay, or dialog, handle it BEFORE doing anything else on the page.
-
-### Cookie/Consent Popups
-- DEFAULT: DECLINE or CLOSE cookie consent popups
-- Look for "Reject all", "Decline", "No thanks", or the X button — click those
-- Only accept cookies if the task explicitly says to
-
-### Login / Sign-In Popups
-- DEFAULT: DISMISS login prompts (click X, "Close", "No thanks", "Continue as guest", "Skip for now", "No, thank you", etc.)
-- Do NOT log in with Google, Apple, Facebook, or any SSO unless the task explicitly says to
-- Do NOT create accounts unless explicitly asked
-- For booking/shopping sites: prefer "Continue as guest" or close the dialog
-- UNLESS the task requires it, avoid logging in to prevent 2FA roadblocks and security issues.
-
-### Newsletter / Marketing Popups
-- Always dismiss immediately (click X or "No thanks")
-
-### How to detect popups
-Look for: modal overlays, "Sign in with Google", "Accept cookies", "Subscribe now",
-"Create account" prompts. They usually appear right after page load — handle them first.
-
-## Output Format
-When submitting results, provide a clear summary of what was done and what was found.
-""",
-}
-
 
 class MemoryManager:
+    # Path to core (fixed) skills shipped inside the package
+    _CORE_SKILLS_DIR = Path(__file__).parent / "skills"
+
     def __init__(self, config):
         self.config = config
-        self.souls_dir = Path(config.souls_dir)
+        self.workspace_dir = Path(config.workspace_dir)
         self.faiss_path = config.faiss_path
         self.memories_dir = Path(config.memories_dir)
         self.memories_dir.mkdir(parents=True, exist_ok=True)
@@ -100,38 +23,34 @@ class MemoryManager:
         self._index = None
         self._id_map = []  # Maps FAISS position → SQLite memory ID
 
-        self._ensure_default_souls()
+        self._ensure_workspace()
 
-    def _ensure_default_souls(self):
-        """Create default soul files if neither subfolder nor flat structure exists."""
-        self.souls_dir.mkdir(parents=True, exist_ok=True)
-        for role, content in DEFAULT_SOULS.items():
-            subfolder = self.souls_dir / role / "soul.md"
-            flat = self.souls_dir / f"{role}.md"
-            if not subfolder.exists() and not flat.exists():
-                flat.write_text(content)
-                logger.info(f"Created default soul file: {flat}")
+    def _ensure_workspace(self):
+        """Create workspace directory structure if it doesn't exist.
+
+        Base template files (soul.md, bootstrap.md, etc.) are copied by
+        _setup_workspace() in __main__.py before any agent runs.
+        """
+        self.workspace_dir.mkdir(parents=True, exist_ok=True)
+        (self.workspace_dir / "skills").mkdir(parents=True, exist_ok=True)
 
     # ── Soul Files ──
 
     def load_soul(self, role: str) -> str:
-        """Load the soul file for a role. Checks {role}/soul.md first, then {role}.md."""
-        subfolder_path = self.souls_dir / role / "soul.md"
-        if subfolder_path.exists():
-            return subfolder_path.read_text()
-        flat_path = self.souls_dir / f"{role}.md"
-        if flat_path.exists():
-            return flat_path.read_text()
+        """Load the soul file for a role from workspace/{role}/soul.md."""
+        soul_path = self.workspace_dir / role / "soul.md"
+        if soul_path.exists():
+            return soul_path.read_text()
         return f"You are the {role} agent."
 
     def load_curated_memory(self, role: str) -> str:
         """Load the MEMORY.md curated long-term memory for a role."""
-        path = self.souls_dir / role / "MEMORY.md"
+        path = self.workspace_dir / role / "MEMORY.md"
         return path.read_text() if path.exists() else ""
 
     def get_heartbeat_instructions(self) -> str:
         """Load the manager's heartbeat task instructions."""
-        path = self.souls_dir / "manager" / "heartbeat.md"
+        path = self.workspace_dir / "manager" / "heartbeat.md"
         return path.read_text() if path.exists() else ""
 
     def get_recent_memory(self, days: int = 3) -> str:
@@ -263,31 +182,26 @@ class MemoryManager:
     # ── Context Building ──
 
     def load_skills(self) -> str:
-        """Load all shared skill files from souls/skills/. Returns combined markdown."""
-        skills_dir = self.souls_dir / "skills"
-        if not skills_dir.exists():
-            return ""
+        """Load all skill files. Core skills (macgent/skills/) first, then learned (workspace/skills/).
+
+        Core skills = shipped with the package (browser, macos, communication) — always present.
+        Learned skills = written by the agent during bootstrap (notion, etc.).
+        """
         parts = []
-        for path in sorted(skills_dir.glob("*.md")):
-            content = path.read_text().strip()
-            if content:
-                parts.append(content)
+        # 1. Core skills (fixed, inside the package)
+        if self._CORE_SKILLS_DIR.exists():
+            for path in sorted(self._CORE_SKILLS_DIR.glob("*.md")):
+                content = path.read_text().strip()
+                if content:
+                    parts.append(content)
+        # 2. Learned skills (workspace/skills/ — agent writes these)
+        learned_dir = self.workspace_dir / "skills"
+        if learned_dir.exists():
+            for path in sorted(learned_dir.glob("*.md")):
+                content = path.read_text().strip()
+                if content:
+                    parts.append(content)
         return "\n\n---\n\n".join(parts)
-
-    def list_skill_names(self) -> list[str]:
-        """Return names of available skill reference docs (from repo skills/ dir)."""
-        skills_dir = self.souls_dir.parent / "skills"
-        if not skills_dir.exists():
-            return []
-        return [p.stem for p in sorted(skills_dir.glob("*.md")) if p.stem != "README"]
-
-    def read_skill(self, name: str) -> str:
-        """Read a skill reference doc by name (e.g. 'javascript' → skills/javascript.md)."""
-        skills_dir = self.souls_dir.parent / "skills"
-        path = skills_dir / f"{name}.md"
-        if path.exists():
-            return path.read_text()
-        return f"Skill '{name}' not found. Available: {', '.join(self.list_skill_names())}"
 
     def build_context(self, db, role: str, task_id=None,
                       task_description: str = "") -> str:
