@@ -224,6 +224,20 @@ def dispatch(action: Action) -> str:
             logger.info(f"File edited: {rel}")
             return f"Edited: {rel}"
 
+        elif t == "delete_file":
+            # Delete a file in the workspace.
+            rel = p.get("path", "")
+            if not rel:
+                return "ERROR: delete_file needs 'path'"
+            path = (_get_workspace_dir() / rel).resolve()
+            if not str(path).startswith(str(_get_workspace_dir().resolve())):
+                return "ERROR: path must be within workspace"
+            if not path.exists():
+                return f"File not found: {rel}"
+            path.unlink()
+            logger.info(f"File deleted: {rel}")
+            return f"Deleted: {rel}"
+
         # ── Notion (generic) ──
 
         elif t == "notion_query":

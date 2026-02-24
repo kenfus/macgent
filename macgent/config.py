@@ -56,10 +56,11 @@ class Config:
     @classmethod
     def from_env(cls) -> "Config":
         macgent_dir = Path(os.getenv("MACGENT_DIR", str(MACGENT_DIR)))
-        # Default workspace dir: use repo's workspace/ if it exists, else ~/.macgent/workspace
+        # Default workspace: always repo's workspace/ dir (created on first run by _setup_workspace)
+        # Override with MACGENT_WORKSPACE_DIR if running macgent installed outside the repo.
         _repo_workspace = Path(__file__).parent.parent / "workspace"
-        default_workspace = str(_repo_workspace) if _repo_workspace.exists() else str(macgent_dir / "workspace")
-        default_log = str(Path(default_workspace) / "macgent.log")
+        default_workspace = str(_repo_workspace)
+        default_log = str(_repo_workspace / "macgent.log")
         return cls(
             reasoning_api_base=os.getenv("REASONING_API_BASE", cls.reasoning_api_base),
             reasoning_api_key=os.getenv("REASONING_API_KEY", ""),

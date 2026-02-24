@@ -74,7 +74,10 @@ class BaseRole:
         resp = self._http.post(url, json=payload, headers=headers)
         resp.raise_for_status()
         data = resp.json()
-        return data["choices"][0]["message"]["content"]
+        content = data["choices"][0]["message"]["content"]
+        if not content or not content.strip():
+            raise RuntimeError(f"Model {model} returned empty response")
+        return content
 
     def parse_json(self, text: str) -> dict | None:
         """Extract JSON from LLM output (reuses proven strategies from reasoner.py)."""

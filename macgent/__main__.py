@@ -4,6 +4,82 @@ import shutil
 from pathlib import Path
 
 
+def _update_env(env_path: Path, values: dict):
+    """Add or update KEY=value entries in a .env file."""
+    lines = env_path.read_text().splitlines() if env_path.exists() else []
+    updated = set()
+    result = []
+    for line in lines:
+        key = line.split("=", 1)[0].strip()
+        if key in values:
+            result.append(f"{key}={values[key]}")
+            updated.add(key)
+        else:
+            result.append(line)
+    for key, val in values.items():
+        if key not in updated:
+            result.append(f"{key}={val}")
+    env_path.write_text("\n".join(result) + "\n")
+
+
+def _run_setup_wizard(config, env_path: Path):
+    """Interactive terminal setup for missing configuration.
+
+    Only runs if Telegram (or other required config) is not set.
+    Never involves the LLM — pure Python/terminal.
+    Returns an updated config object.
+    """
+    needs_setup = not config.telegram_bot_token or not config.telegram_chat_id
+    if not needs_setup:
+        return config
+
+    print()
+    print("=" * 60)
+    print("  macgent — first-time setup")
+    print("=" * 60)
+    print(f"\nWorkspace: {config.workspace_dir}")
+    print(f"Log file:  {config.log_file}")
+
+    new_values = {}
+
+    # ── Telegram ──────────────────────────────────────────────
+    if not config.telegram_bot_token or not config.telegram_chat_id:
+        print()
+        print("Telegram is not configured.")
+        print("The agent sends you updates and reads your replies via Telegram.")
+        print()
+        print("How to set up:")
+        print("  1. Open Telegram → search @BotFather → send /newbot")
+        print("  2. Follow the prompts — BotFather gives you an API token")
+        print("  3. Start a chat with your new bot (send it any message)")
+        print("  4. To find your chat ID: message @userinfobot in Telegram")
+        print()
+
+        token = input("Paste your Telegram bot token (Enter to skip): ").strip()
+        if token:
+            chat_id = input("Paste your Telegram chat ID: ").strip()
+            if chat_id:
+                new_values["TELEGRAM_BOT_TOKEN"] = token
+                new_values["TELEGRAM_CHAT_ID"] = chat_id
+
+    if new_values:
+        _update_env(env_path, new_values)
+        print(f"\nSaved to {env_path}")
+        # Reload env + config
+        from dotenv import load_dotenv
+        load_dotenv(str(env_path), override=True)
+        import os
+        for key, val in new_values.items():
+            os.environ[key] = val
+        from macgent.config import Config
+        config = Config.from_env()
+    else:
+        print("\n(Skipped — you can add TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to .env later)")
+
+    print()
+    return config
+
+
 def _setup_workspace(workspace_dir: str):
     """Copy missing base template files from macgent/workspace/ → workspace/.
 
@@ -49,7 +125,9 @@ def _setup_logging(log_file: str):
 
 def main():
     from dotenv import load_dotenv, find_dotenv
-    load_dotenv(find_dotenv(usecwd=True))
+    dotenv_path = find_dotenv(usecwd=True)
+    load_dotenv(dotenv_path)
+    env_file = Path(dotenv_path) if dotenv_path else Path(".env")
 
     from macgent.config import Config, MACGENT_DIR
     config = Config.from_env()
@@ -67,6 +145,9 @@ def main():
     if not config.reasoning_api_key:
         print("ERROR: Set REASONING_API_KEY in .env file")
         sys.exit(1)
+
+    # Interactive setup wizard for missing Telegram config (terminal only, no LLM)
+    config = _run_setup_wizard(config, env_file)
 
     # Detect legacy mode: if first arg isn't a known subcommand, run single agent
     SUBCOMMANDS = {"task", "daemon", "status", "log", "answer", "soul", "-h", "--help"}

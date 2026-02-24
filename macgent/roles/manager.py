@@ -52,6 +52,13 @@ class ManagerRole(BaseRole):
         self.db.conn.execute("DELETE FROM monitor_state WHERE source = ?", ("_wake_request",))
         self.db.conn.commit()
 
+    def _cleanup_bootstrap(self):
+        """Delete bootstrap.md after bootstrap completes (IDENTITY.md exists)."""
+        bootstrap_path = Path(self.config.workspace_dir) / "manager" / "bootstrap.md"
+        if bootstrap_path.exists():
+            bootstrap_path.unlink()
+            logger.info("Bootstrap complete — deleted manager/bootstrap.md")
+
     def tick(self) -> bool:
         """One heartbeat cycle. Returns True if something happened."""
         logger.info("Manager tick starting")
@@ -60,6 +67,8 @@ class ManagerRole(BaseRole):
         if woken_early:
             logger.info("Manager woken by external notification")
             self.clear_wake_request()
+
+        was_bootstrapped = self._is_bootstrapped()
 
         # 1. Build full context (Python does this automatically)
         #    soul.md + IDENTITY.md + all skills + MEMORY.md + daily logs + FAISS recall
@@ -74,23 +83,29 @@ class ManagerRole(BaseRole):
         if ceo_messages:
             self.db.mark_messages_read("manager")
 
-        # Check email monitors
+        # Check email monitors (skip during bootstrap — first boot is setup only)
         email_items = []
-        for monitor in self.monitors:
-            try:
-                items = monitor.check(self.db)
-                email_items.extend(items)
-            except Exception as e:
-                logger.error(f"Monitor {monitor.source_name} failed: {e}")
+        if was_bootstrapped:
+            for monitor in self.monitors:
+                try:
+                    items = monitor.check(self.db)
+                    email_items.extend(items)
+                except Exception as e:
+                    logger.error(f"Monitor {monitor.source_name} failed: {e}")
 
         # 3. Build the task prompt
-        if not self._is_bootstrapped():
+        if not was_bootstrapped:
             # First time: load bootstrap instructions
             bootstrap_path = Path(self.config.workspace_dir) / "manager" / "bootstrap.md"
             if bootstrap_path.exists():
                 task_prompt = bootstrap_path.read_text()
             else:
-                task_prompt = "No bootstrap.md found. Introduce yourself to the CEO and set up."
+                task_prompt = "No bootstrap.md found. Set yourself up: write IDENTITY.md and user.md, then introduce yourself via Telegram."
+            # Include any queued CEO messages as context (e.g. from Telegram before first boot)
+            if ceo_texts:
+                task_prompt += "\n\n## CEO Messages (context — what they've already written to you)\n"
+                for i, text in enumerate(ceo_texts, 1):
+                    task_prompt += f"\n{i}. {text}\n"
             logger.info("Manager running bootstrap (no IDENTITY.md found)")
         else:
             # Normal heartbeat
@@ -117,9 +132,12 @@ class ManagerRole(BaseRole):
         conversation = [{"role": "user", "content": task_prompt}]
         anything_happened = False
 
+        # Bootstrap needs more tokens to write large files (skills/notion.md, IDENTITY.md)
+        tick_max_tokens = 4096 if not self._is_bootstrapped() else 2048
+
         for turn in range(MAX_TURNS):
             try:
-                response = self.call_llm(conversation, system=system, max_tokens=2048)
+                response = self.call_llm(conversation, system=system, max_tokens=tick_max_tokens)
             except Exception as e:
                 logger.error(f"Manager LLM call failed: {e}")
                 break
@@ -160,13 +178,17 @@ class ManagerRole(BaseRole):
                 anything_happened = True
 
                 # Log significant actions
-                if action_type in ("notion_create", "notion_update", "send_telegram", "write_file"):
+                if action_type in ("notion_create", "notion_update", "send_telegram", "write_file", "delete_file"):
                     logger.info(f"Manager action: {action_type} params={str(params)[:200]}")
 
             # Feed results back to LLM
             result_text = "\n".join(results) if results else "(no actions executed)"
             conversation.append({"role": "assistant", "content": response})
             conversation.append({"role": "user", "content": f"Action results:\n{result_text}\n\nContinue with next step, or respond HEARTBEAT_OK if done."})
+
+        # If bootstrap just completed, clean up bootstrap.md (Python handles it even if LLM forgot)
+        if not was_bootstrapped and self._is_bootstrapped():
+            self._cleanup_bootstrap()
 
         # Max turns reached or LLM stopped
         if anything_happened:
