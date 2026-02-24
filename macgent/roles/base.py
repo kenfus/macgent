@@ -129,7 +129,7 @@ class BaseRole:
 
         return None
 
-    def get_system_prompt(self, task_id: int | None = None,
+    def get_system_prompt(self, task_id: str | None = None,
                           task_description: str = "") -> str:
         """Build full system prompt with soul + memory context."""
         context = self.memory.build_context(

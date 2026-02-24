@@ -1,14 +1,14 @@
 """Worker role — executes tasks from Notion board and updates progress there.
 
 The Worker NEVER messages the CEO directly. All communication goes through
-the Notion board. The Manager reads it and talks to the CEO.
+the Notion board (via generic notion_update action). The Manager reads it
+and talks to the CEO.
 """
 
 import logging
 from macgent.roles.base import BaseRole
 from macgent.prompts.role_prompts import WORKER_LEARN_PROMPT
-from macgent.actions import notion_actions
-from macgent.actions.dispatcher import set_notion_context
+from macgent.actions.dispatcher import set_dispatch_config
 
 logger = logging.getLogger("macgent.roles.worker")
 
@@ -16,83 +16,113 @@ logger = logging.getLogger("macgent.roles.worker")
 class WorkerRole(BaseRole):
     role_name = "worker"
 
-    @property
-    def _token(self):
-        return self.config.notion_token
-
-    @property
-    def _db_id(self):
-        return self.config.notion_database_id
+    def __init__(self, config, db, memory):
+        super().__init__(config, db, memory)
+        # Push config to dispatcher so Notion actions work
+        set_dispatch_config(config)
 
     def tick(self):
-        """Called each heartbeat: claim and run next Ready task from Notion."""
+        """Called each heartbeat: claim and run next Ready task from Notion.
+
+        Note: In the new architecture, the Manager's LLM decides which task
+        to assign. This tick() is a fallback for daemon mode where the worker
+        runs independently.
+        """
+        from macgent.actions import notion_actions
+
         logger.info("Worker tick starting")
         self.db.log("worker", "tick_start")
 
-        task = notion_actions.next_ready_task(self._token, self._db_id)
-        if not task:
+        # Query Notion for ready tasks (worker uses generic query)
+        tasks = notion_actions.notion_query(
+            self.config.notion_token,
+            self.config.notion_database_id,
+        )
+        # Find first task with a "ready"-like status (agent's skill doc defines the exact name)
+        # Fallback heuristic: look for common ready-state names
+        ready_task = None
+        for t in tasks:
+            status = (t.get("Status", "") or "").lower()
+            if "ready" in status and "not" not in status:
+                ready_task = t
+                break
+
+        if not ready_task:
             print("  Worker: No ready tasks")
             self.db.log("worker", "no_tasks")
             return
 
-        print(f"  Worker: Claiming task '{task['title']}'")
-        self.run_task(task)
+        # Find the title (could be any property name)
+        title = ""
+        for key in ("Task Name", "Name", "Title"):
+            if key in ready_task:
+                title = ready_task[key]
+                break
+        if not title:
+            title = str(ready_task.get("page_id", "unknown"))[:20]
 
+        print(f"  Worker: Claiming task '{title}'")
+        self.run_task(ready_task)
         self.db.log("worker", "tick_done")
 
     def run_task(self, task: dict):
-        """Execute a Notion task: claim → execute → update Notion → learn.
+        """Execute a Notion task: claim -> execute -> learn.
 
         Args:
-            task: Notion task dict with at least page_id, title, description.
+            task: Simplified Notion page dict (from notion_query/notion_get).
+                  Must contain 'page_id'. Other fields depend on board layout.
         """
         page_id = task["page_id"]
-        self.db.log("worker", "task_claimed", task["title"], page_id)
 
-        # Set Notion context so the agent's notion_update action works
-        set_notion_context(self._token, page_id)
+        # Find title and description from whatever property names exist
+        title = ""
+        description = ""
+        for key, val in task.items():
+            if key in ("Task Name", "Name", "Title") and val:
+                title = val
+            if key in ("Description",) and val:
+                description = val
+        if not title:
+            title = str(page_id)[:20]
+
+        self.db.log("worker", "task_claimed", title, page_id)
 
         # Semantic memory recall before execution
-        recalled = self.memory.recall(self.db, "worker", task["description"], top_k=5)
+        recall_text = description or title
+        recalled = self.memory.recall(self.db, "worker", recall_text, top_k=5)
         if recalled:
-            print(f"  Worker: Recalled {len(recalled)} relevant memories for '{task['title']}'")
+            print(f"  Worker: Recalled {len(recalled)} relevant memories for '{title}'")
             for m in recalled[:3]:
                 print(f"    - [{m['category']}] {m['content'][:80]}")
 
-        # Mark In Progress in Notion
-        notion_actions.update_task(self._token, page_id, status="In Progress")
-        print(f"  Worker: Executing task '{task['title']}'")
+        print(f"  Worker: Executing task '{title}'")
 
-        # Execute
-        result = self._execute_task(task)
+        # Execute — the Agent gets page_id in its context so it can use notion_update
+        result = self._execute_task(task, title, description)
 
-        # Done or Blocked — worker never sends Telegram, only updates Notion
-        success = "status: completed" in result.lower()
-        if success:
-            notion_actions.update_task(
-                self._token, page_id,
-                status="Done", note=result[:500],
-            )
-            self.db.log("worker", "completed", result[:100], page_id)
-        else:
-            notion_actions.update_task(
-                self._token, page_id,
-                status="Blocked", note=result[:500],
-            )
-            self.db.log("worker", "blocked", result[:100], page_id)
+        self.db.log("worker", "task_done", result[:100], page_id)
+        print(f"  Worker: Task '{title}' finished: {result[:80]}")
+        self._learn_from_task(title, page_id, result)
 
-        print(f"  Worker: Task '{task['title']}' → {'Done' if success else 'Blocked'}: {result[:80]}")
-        self._learn_from_task(task, result)
-
-    def _execute_task(self, task: dict) -> str:
+    def _execute_task(self, task: dict, title: str, description: str) -> str:
         """Execute the task using the browser agent."""
         from macgent.agent import Agent
 
-        agent = Agent(
-            self.config, db=self.db, task_id=task["page_id"],
-            memory=self.memory, task_description=task["description"],
+        page_id = task["page_id"]
+
+        # Build task text with page_id so the agent can update Notion
+        task_text = description or title
+        task_context = (
+            f"{task_text}\n\n"
+            f"[Your Notion task page_id: {page_id}]\n"
+            f"Use notion_update with this page_id to update your progress and status."
         )
-        state = agent.run(task["description"])
+
+        agent = Agent(
+            self.config, db=self.db, task_id=page_id,
+            memory=self.memory, task_description=task_text,
+        )
+        state = agent.run(task_context)
 
         parts = [f"Status: {state.status}", f"Steps: {len(state.steps)}"]
         if state.steps:
@@ -104,11 +134,11 @@ class WorkerRole(BaseRole):
 
         return "\n".join(parts)
 
-    def _learn_from_task(self, task: dict, result: str):
+    def _learn_from_task(self, title: str, page_id: str, result: str):
         """Extract and store a lesson from the completed task."""
         system = self.get_system_prompt()
         prompt = WORKER_LEARN_PROMPT.format(
-            task_title=task["title"],
+            task_title=title,
             result=result[:500],
             steps="(see above)",
         )
@@ -122,7 +152,7 @@ class WorkerRole(BaseRole):
                 self.memory.remember(
                     self.db, "worker", data["lesson"],
                     category=data.get("category", "lesson"),
-                    task_id=task.get("page_id"),
+                    task_id=page_id,
                 )
                 print(f"  Worker: Learned — {data['lesson'][:60]}")
         except Exception as e:

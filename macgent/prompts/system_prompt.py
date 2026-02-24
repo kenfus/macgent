@@ -76,17 +76,34 @@ mail_send: Send an email
 mail_reply: Reply to an email by inbox number
   {"reasoning": "...", "action": {"type": "mail_reply", "params": {"number": 1, "body": "Reply text"}}}
 
-### Notion Board
-notion_update: Update your task's Notion card with progress or status
-  {"reasoning": "...", "action": {"type": "notion_update", "params": {"status": "In Progress", "note": "Found 3 hotels, comparing prices"}}}
-  {"reasoning": "...", "action": {"type": "notion_update", "params": {"status": "Blocked", "note": "Need to know: Basel city center or airport area?"}}}
-  {"reasoning": "...", "action": {"type": "notion_update", "params": {"note": "Step 2/5: Entering dates on booking.com"}}}
-  Status values: "In Progress", "Done", "Blocked". Omit status to just add a progress note.
-  Use "Blocked" when you cannot proceed without CEO input. The Manager will read your note and ask the CEO.
+### Notion Board (generic API)
+notion_query: Query the Notion database (use filter from your notion skill doc)
+  {"reasoning": "...", "action": {"type": "notion_query", "params": {}}}
+  {"reasoning": "...", "action": {"type": "notion_query", "params": {"filter": {"property": "Status", "status": {"equals": "In Progress"}}}}}
 
-read_skill: Look up a technical skill reference doc by name
+notion_get: Get a single Notion page by ID
+  {"reasoning": "...", "action": {"type": "notion_get", "params": {"page_id": "abc-123"}}}
+
+notion_update: Update a Notion page (raw Notion property format)
+  {"reasoning": "...", "action": {"type": "notion_update", "params": {"page_id": "abc-123", "properties": {"Notes": {"rich_text": [{"text": {"content": "progress note"}}]}}}}}
+
+notion_create: Create a new page in the database
+  {"reasoning": "...", "action": {"type": "notion_create", "params": {"properties": {"Task Name": {"title": [{"text": {"content": "Task title"}}]}}}}}
+
+notion_schema: Inspect the database schema (properties and options)
+  {"reasoning": "...", "action": {"type": "notion_schema", "params": {}}}
+
+Refer to your Notion skill doc for property names, status values, and filter syntax.
+
+### Skills & Identity
+read_skill: Look up a skill reference doc
   {"reasoning": "...", "action": {"type": "read_skill", "params": {"name": "javascript"}}}
-  Available skills: javascript, browser_automation, email_operations, calendar_operations, messages, applescript
+
+write_skill: Write or update a learned skill doc
+  {"reasoning": "...", "action": {"type": "write_skill", "params": {"name": "notion", "content": "# My Notion Skill\n..."}}}
+
+write_identity: Save your identity (marks bootstrap complete)
+  {"reasoning": "...", "action": {"type": "write_identity", "params": {"role": "manager", "content": "# Identity\n..."}}}
 
 ### Control
 wait: Wait for page to load

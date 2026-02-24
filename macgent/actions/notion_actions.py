@@ -1,49 +1,17 @@
-"""Notion REST API actions for managing the planning board.
+"""Generic Notion REST API wrapper.
 
-Notion is the SINGLE SOURCE OF TRUTH for all tasks. No SQLite task storage.
+Thin layer — no status maps, no property knowledge, no schema opinions.
+The agent learns the board layout during bootstrap and stores it in
+souls/skills/notion.md. This module just provides the plumbing.
 """
 
 import logging
-from datetime import datetime, timezone, timedelta
-
 import httpx
 
 logger = logging.getLogger("macgent.actions.notion")
 
 NOTION_API = "https://api.notion.com/v1"
 NOTION_VERSION = "2022-06-28"
-
-# Properties we need to ensure exist (won't touch existing ones like Status, Priority, Task Name).
-REQUIRED_EXTRA_PROPERTIES = {
-    "Description": {"rich_text": {}},
-    "Source": {"rich_text": {}},
-    "MacgentID": {"number": {"format": "number"}},
-    "Notes": {"rich_text": {}},
-}
-
-# Detected at runtime by ensure_schema().
-# "status" = Notion built-in, "select" = custom select.
-_status_prop_type = "status"
-
-# Map our internal status names → actual Notion option names.
-# Adapt if the Notion board uses different labels.
-STATUS_MAP = {
-    "Inbox": "Backlog",
-    "Ready": "Ready to be worked on",
-    "In Progress": "In Progress",
-    "Done": "Complete",
-    "Blocked": "Blocked",
-}
-# Reverse map: Notion option name → our internal name.
-STATUS_REVERSE = {v: k for k, v in STATUS_MAP.items()}
-
-# Map our internal priority (int) → Notion option names.
-PRIORITY_MAP = {1: "Critical", 2: "High", 3: "Medium", 4: "Low"}
-# Reverse: Notion name → our internal name (kept as-is for display).
-PRIORITY_REVERSE = {"Critical": "P1", "High": "P2", "Medium": "P3", "Low": "P4"}
-
-# Title property name in Notion (may be "Name" or "Task Name" etc.)
-_title_prop = "Task Name"
 
 
 def _headers(token: str) -> dict:
@@ -54,138 +22,119 @@ def _headers(token: str) -> dict:
     }
 
 
-def _parse_page(page: dict) -> dict:
-    """Parse a Notion page into a flat task dict."""
-    props = page.get("properties", {})
-
-    # Title — try detected property name, fall back to "Name"
-    title_parts = props.get(_title_prop, props.get("Name", {})).get("title", [])
-    title = "".join(t.get("plain_text", "") for t in title_parts)
-
-    # Status — handle both "status" (built-in) and "select" types
-    status_prop = props.get("Status", {})
-    status_type = status_prop.get("type", _status_prop_type)
-    raw_status = (status_prop.get(status_type) or {}).get("name", "")
-    page_status = STATUS_REVERSE.get(raw_status, raw_status)
-
-    # Priority
-    raw_priority = (props.get("Priority", {}).get("select") or {}).get("name", "")
-    priority = PRIORITY_REVERSE.get(raw_priority, raw_priority)
-
-    macgent_id = props.get("MacgentID", {}).get("number")
-    desc_parts = props.get("Description", {}).get("rich_text", [])
-    description = "".join(t.get("plain_text", "") for t in desc_parts)
-    notes_parts = props.get("Notes", {}).get("rich_text", [])
-    notes = "".join(t.get("plain_text", "") for t in notes_parts)
-    source_parts = props.get("Source", {}).get("rich_text", [])
-    source = "".join(t.get("plain_text", "") for t in source_parts)
-
-    page_id = page["id"]
-    return {
-        "page_id": page_id,
-        "id": page_id,                     # alias for code that expects task["id"]
-        "title": title,
-        "status": page_status,
-        "priority": priority,
-        "macgent_id": macgent_id,
-        "description": description,
-        "notes": notes,
-        "source": source,
-        "notion_page_id": page_id,          # alias for code that expects task["notion_page_id"]
-        "last_edited_time": page.get("last_edited_time", ""),
-    }
+def _simplify_props(props: dict) -> dict:
+    """Flatten Notion property objects into simple key-value pairs."""
+    out = {}
+    for name, prop in props.items():
+        ptype = prop.get("type", "")
+        if ptype == "title":
+            parts = prop.get("title", [])
+            out[name] = "".join(p.get("plain_text", "") for p in parts)
+        elif ptype == "rich_text":
+            parts = prop.get("rich_text", [])
+            out[name] = "".join(p.get("plain_text", "") for p in parts)
+        elif ptype in ("select", "status"):
+            val = prop.get(ptype)
+            out[name] = val.get("name", "") if val else ""
+        elif ptype == "multi_select":
+            out[name] = [o.get("name", "") for o in prop.get("multi_select", [])]
+        elif ptype == "number":
+            out[name] = prop.get("number")
+        elif ptype == "checkbox":
+            out[name] = prop.get("checkbox", False)
+        elif ptype == "date":
+            d = prop.get("date")
+            out[name] = d.get("start", "") if d else ""
+        elif ptype == "url":
+            out[name] = prop.get("url", "")
+        else:
+            out[name] = f"<{ptype}>"
+    return out
 
 
-def ensure_schema(token: str, database_id: str) -> bool:
-    """Ensure the Notion database has required extra properties. Detects existing schema."""
-    global _status_prop_type, _title_prop
+def _simplify_page(page: dict) -> dict:
+    """Convert a Notion page into a flat, readable dict."""
+    result = {"page_id": page["id"]}
+    result["last_edited_time"] = page.get("last_edited_time", "")
+    result.update(_simplify_props(page.get("properties", {})))
+    return result
+
+
+# ── Generic CRUD ──
+
+
+def notion_query(
+    token: str,
+    database_id: str,
+    filter: dict | None = None,
+    sorts: list | None = None,
+    page_size: int = 50,
+) -> list[dict]:
+    """Query a Notion database. Returns list of simplified page dicts."""
     if not token or not database_id:
-        logger.warning("Notion token or database_id not configured, skipping schema check")
-        return False
+        return []
+
+    body: dict = {"page_size": page_size}
+    if filter:
+        body["filter"] = filter
+    if sorts:
+        body["sorts"] = sorts
 
     try:
-        # Get current database schema
+        resp = httpx.post(
+            f"{NOTION_API}/databases/{database_id}/query",
+            headers=_headers(token),
+            json=body,
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            logger.error(f"Notion query failed ({resp.status_code}): {resp.text[:500]}")
+            return []
+        return [_simplify_page(p) for p in resp.json().get("results", [])]
+    except Exception as e:
+        logger.error(f"Notion query error: {e}")
+        return []
+
+
+def notion_get(token: str, page_id: str) -> dict | None:
+    """Get a single Notion page. Returns simplified dict or None."""
+    if not token or not page_id:
+        return None
+    try:
         resp = httpx.get(
-            f"{NOTION_API}/databases/{database_id}",
+            f"{NOTION_API}/pages/{page_id}",
             headers=_headers(token),
             timeout=10,
         )
         resp.raise_for_status()
-        existing = resp.json().get("properties", {})
-        existing_names = set(existing.keys())
+        return _simplify_page(resp.json())
+    except Exception as e:
+        logger.error(f"Notion get page {page_id}: {e}")
+        return None
 
-        # Detect Status property type (Notion built-in "status" vs custom "select")
-        if "Status" in existing:
-            detected = existing["Status"].get("type", "select")
-            _status_prop_type = detected
-            logger.info(f"Notion Status property type: {detected}")
 
-        # Detect title property name (could be "Name", "Task Name", etc.)
-        for name, prop in existing.items():
-            if prop.get("type") == "title":
-                _title_prop = name
-                logger.info(f"Notion title property: '{name}'")
-                break
-
-        # Only add missing extra properties (Description, Source, Notes, MacgentID)
-        missing = {k: v for k, v in REQUIRED_EXTRA_PROPERTIES.items()
-                   if k not in existing_names}
-        if not missing:
-            logger.info("Notion database schema is up to date")
-            return True
-
-        logger.info(f"Adding missing Notion properties: {list(missing.keys())}")
-        patch_resp = httpx.patch(
-            f"{NOTION_API}/databases/{database_id}",
+def notion_update(token: str, page_id: str, properties: dict) -> bool:
+    """Update a Notion page's properties. Caller builds the raw Notion properties dict."""
+    if not token or not page_id or not properties:
+        return False
+    try:
+        resp = httpx.patch(
+            f"{NOTION_API}/pages/{page_id}",
             headers=_headers(token),
-            json={"properties": missing},
+            json={"properties": properties},
             timeout=10,
         )
-        patch_resp.raise_for_status()
-        logger.info("Notion database schema updated successfully")
+        resp.raise_for_status()
         return True
-
     except Exception as e:
-        logger.error(f"Failed to ensure Notion schema: {e}")
+        logger.error(f"Notion update page {page_id}: {e}")
         return False
 
 
-def create_task(
-    token: str,
-    database_id: str,
-    title: str,
-    description: str = "",
-    priority: int = 3,
-    source: str = "",
-    status: str = "Ready",
-    note: str = "",
-) -> str | None:
-    """Create a new task page in the Notion database. Returns the page_id or None."""
+def notion_create(token: str, database_id: str, properties: dict) -> str | None:
+    """Create a Notion page. Caller builds the raw properties dict. Returns page_id."""
     if not token or not database_id:
-        logger.warning("Notion not configured, skipping create_task")
         return None
-
-    priority_label = PRIORITY_MAP.get(priority, "Medium")
-    notion_status = STATUS_MAP.get(status, status)
-
-    properties: dict = {
-        _title_prop: {"title": [{"text": {"content": title[:100]}}]},
-        "Status": {_status_prop_type: {"name": notion_status}},
-        "Priority": {"select": {"name": priority_label}},
-    }
-    if description:
-        properties["Description"] = {
-            "rich_text": [{"text": {"content": description[:2000]}}]
-        }
-    if source:
-        properties["Source"] = {
-            "rich_text": [{"text": {"content": source[:200]}}]
-        }
-    if note:
-        properties["Notes"] = {
-            "rich_text": [{"text": {"content": note[:2000]}}]
-        }
-
     try:
         resp = httpx.post(
             f"{NOTION_API}/pages",
@@ -195,145 +144,55 @@ def create_task(
         )
         resp.raise_for_status()
         page_id = resp.json()["id"]
-        logger.info(f"Created Notion task '{title}' → {page_id}")
+        logger.info(f"Created Notion page: {page_id}")
         return page_id
     except Exception as e:
-        logger.error(f"Failed to create Notion task: {e}")
+        logger.error(f"Notion create page: {e}")
         return None
 
 
-def update_task(
-    token: str,
-    page_id: str,
-    status: str | None = None,
-    note: str | None = None,
-) -> bool:
-    """Update a Notion task's Status and/or Notes."""
-    if not token or not page_id:
-        return False
-
-    properties: dict = {}
-    if status:
-        notion_status = STATUS_MAP.get(status, status)
-        properties["Status"] = {_status_prop_type: {"name": notion_status}}
-    if note:
-        properties["Notes"] = {
-            "rich_text": [{"text": {"content": note[:2000]}}]
-        }
-
-    if not properties:
-        return True
-
-    try:
-        resp = httpx.patch(
-            f"{NOTION_API}/pages/{page_id}",
-            headers=_headers(token),
-            json={"properties": properties},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        logger.info(f"Updated Notion page {page_id}: status={status}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to update Notion task {page_id}: {e}")
-        return False
-
-
-def list_tasks(
-    token: str,
-    database_id: str,
-    status: str | None = None,
-) -> list[dict]:
-    """Query the Notion database. Returns list of task dicts."""
+def notion_schema(token: str, database_id: str) -> str:
+    """Get database schema as human-readable text. Used during bootstrap."""
     if not token or not database_id:
-        return []
-
-    body: dict = {"page_size": 50}
-    if status:
-        notion_status = STATUS_MAP.get(status, status)
-        body["filter"] = {
-            "property": "Status",
-            _status_prop_type: {"equals": notion_status},
-        }
-
-    try:
-        resp = httpx.post(
-            f"{NOTION_API}/databases/{database_id}/query",
-            headers=_headers(token),
-            json=body,
-            timeout=10,
-        )
-        if resp.status_code != 200:
-            logger.error(f"Notion query failed ({resp.status_code}): {resp.text[:500]}")
-            return []
-        results = resp.json().get("results", [])
-
-        tasks = []
-        for page in results:
-            tasks.append(_parse_page(page))
-        return tasks
-    except Exception as e:
-        logger.error(f"Failed to list Notion tasks: {e}")
-        return []
-
-
-def get_task(token: str, page_id: str) -> dict | None:
-    """Get a single Notion task page. Returns full task dict or None."""
-    if not token or not page_id:
-        return None
-
+        return "ERROR: Notion not configured"
     try:
         resp = httpx.get(
-            f"{NOTION_API}/pages/{page_id}",
+            f"{NOTION_API}/databases/{database_id}",
             headers=_headers(token),
             timeout=10,
         )
         resp.raise_for_status()
-        return _parse_page(resp.json())
-    except Exception as e:
-        logger.error(f"Failed to get Notion task {page_id}: {e}")
-        return None
-
-
-def next_ready_task(token: str, database_id: str) -> dict | None:
-    """Get highest-priority Ready task from Notion. Returns task dict or None."""
-    tasks = list_tasks(token, database_id, status="Ready")
-    if not tasks:
-        return None
-    priority_order = {"P1": 1, "P2": 2, "P3": 3, "P4": 4}
-    tasks.sort(key=lambda t: priority_order.get(t["priority"], 99))
-    return tasks[0]
-
-
-def get_stale_tasks(token: str, database_id: str, minutes: int = 60) -> list[dict]:
-    """Get In Progress tasks not edited in the last N minutes."""
-    if not token or not database_id:
-        return []
-
-    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
-    notion_status = STATUS_MAP.get("In Progress", "In Progress")
-    body = {
-        "filter": {
-            "and": [
-                {"property": "Status", _status_prop_type: {"equals": notion_status}},
-                {"timestamp": "last_edited_time", "last_edited_time": {"before": cutoff}},
-            ]
-        },
-        "page_size": 50,
-    }
-
-    try:
-        resp = httpx.post(
-            f"{NOTION_API}/databases/{database_id}/query",
-            headers=_headers(token),
-            json=body,
-            timeout=10,
+        data = resp.json()
+        db_title = "".join(
+            t.get("plain_text", "") for t in data.get("title", [])
         )
-        if resp.status_code != 200:
-            logger.error(f"Notion stale query failed ({resp.status_code}): {resp.text[:500]}")
-            return []
-        results = resp.json().get("results", [])
-        return [_parse_page(page) for page in results]
+        props = data.get("properties", {})
+
+        lines = [f"Database: {db_title}", f"ID: {database_id}", ""]
+        lines.append("Properties:")
+        for name, prop in props.items():
+            ptype = prop.get("type", "unknown")
+            detail = ""
+            if ptype in ("select", "status"):
+                options = prop.get(ptype, {}).get("options", [])
+                names = [o["name"] for o in options]
+                detail = f" -> options: {names}"
+                if ptype == "status":
+                    groups = prop.get("status", {}).get("groups", [])
+                    if groups:
+                        group_info = []
+                        for g in groups:
+                            gname = g["name"]
+                            gids = g.get("option_ids", [])
+                            gopts = [o["name"] for o in options if o["id"] in gids]
+                            group_info.append(f"{gname}: {gopts}")
+                        detail += f"\n    groups: {group_info}"
+            elif ptype == "multi_select":
+                options = prop.get("multi_select", {}).get("options", [])
+                names = [o["name"] for o in options]
+                detail = f" -> options: {names}"
+            lines.append(f"  - {name} ({ptype}){detail}")
+        return "\n".join(lines)
     except Exception as e:
-        logger.error(f"Failed to get stale Notion tasks: {e}")
-        return []
+        logger.error(f"Notion schema error: {e}")
+        return f"ERROR: {e}"

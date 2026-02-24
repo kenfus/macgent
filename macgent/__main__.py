@@ -108,7 +108,7 @@ def _run_task(config, description: str):
     db = DB(config.db_path)
     memory = MemoryManager(config)
 
-    # Route through manager to get Notion integration + clarification
+    # Route through manager LLM to create Notion task
     manager = ManagerRole(config, db, memory)
     page_id = manager.handle_new_ceo_task(description)
     if not page_id:
@@ -116,22 +116,23 @@ def _run_task(config, description: str):
         return
     print(f"Created task in Notion: {description}")
 
-    # Check if task needs clarification (Inbox status)
-    task = notion_actions.get_task(config.notion_token, page_id)
-    if task and task["status"] == "Inbox":
-        print("Task requires CEO clarification — check Telegram.")
+    # Get the created task
+    task = notion_actions.notion_get(config.notion_token, page_id)
+    if not task:
+        print("Could not retrieve created task.")
         return
 
-    # Otherwise run immediately
+    # Run immediately via worker
     worker = WorkerRole(config, db, memory)
     worker.run_task(task)
 
     # Show final status from Notion
-    task = notion_actions.get_task(config.notion_token, page_id)
+    task = notion_actions.notion_get(config.notion_token, page_id)
     if task:
-        print(f"\nFinal status: {task['status']}")
-        if task.get("notes"):
-            print(f"Notes: {task['notes']}")
+        print(f"\nFinal status: {task.get('Status', '?')}")
+        notes = task.get("Notes", "")
+        if notes:
+            print(f"Notes: {notes}")
 
 
 def _run_daemon(config, interval: int, once: bool = False):
@@ -238,18 +239,28 @@ def _show_status(config):
     """Show tasks from the Notion board."""
     from macgent.actions import notion_actions
 
-    tasks = notion_actions.list_tasks(config.notion_token, config.notion_database_id)
+    tasks = notion_actions.notion_query(config.notion_token, config.notion_database_id)
     if not tasks:
         print("No tasks on the Notion board.")
         return
     for t in tasks:
-        status_icon = {
-            "Inbox": "?", "Ready": " ", "In Progress": ">",
-            "Done": "+", "Blocked": "!",
-        }.get(t["status"], "?")
-        print(f"  [{status_icon}] ({t['priority']}) {t['title']}  [{t['status']}]")
-        if t.get("notes"):
-            print(f"      Notes: {t['notes'][:80]}")
+        # Find title, status, priority from whatever property names exist
+        title = ""
+        status = ""
+        priority = ""
+        notes = ""
+        for key, val in t.items():
+            if key in ("Task Name", "Name", "Title") and val:
+                title = val
+            if key == "Status" and val:
+                status = val
+            if key == "Priority" and val:
+                priority = val
+            if key == "Notes" and val:
+                notes = val
+        print(f"  [{status or '?'}] ({priority or '?'}) {title or t.get('page_id', '?')[:20]}")
+        if notes:
+            print(f"      Notes: {notes[:80]}")
 
 
 def _show_log(config, n: int):
@@ -269,18 +280,22 @@ def _answer_escalation(config, page_id: str, text: str):
     from macgent.db import DB
     from macgent.actions import notion_actions
 
-    task = notion_actions.get_task(config.notion_token, page_id)
+    task = notion_actions.notion_get(config.notion_token, page_id)
     if not task:
         print(f"Task {page_id} not found in Notion.")
         return
 
     db = DB(config.db_path)
     db.send_message("ceo", "manager", page_id, text)
-    notion_actions.update_task(
-        config.notion_token, page_id,
-        status="Ready", note=f"CEO input: {text[:500]}",
-    )
-    print(f"Answer sent for '{task['title']}', status set to Ready.")
+
+    # Find title
+    title = ""
+    for key in ("Task Name", "Name", "Title"):
+        if key in task and task[key]:
+            title = task[key]
+            break
+
+    print(f"Answer queued for '{title or page_id}'. Manager will process it on next heartbeat.")
 
 
 def _soul_command(config, action: str, role: str):

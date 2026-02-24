@@ -1,19 +1,30 @@
 import time
+import json
 import logging
+from pathlib import Path
 from macgent.models import Action
 from macgent.actions import safari_actions, mouse, calendar_actions
 from macgent.perception.safari import run_osascript, execute_js_in_safari
 
 logger = logging.getLogger("macgent.dispatcher")
 
-# Notion context for the current task — set by WorkerRole before spawning Agent
-_current_notion_context = {"token": "", "page_id": ""}
+# Config reference — set by the role before spawning an Agent
+_dispatch_config = {"notion_token": "", "notion_database_id": "", "souls_dir": ""}
 
 
-def set_notion_context(token: str, page_id: str):
-    """Set Notion credentials for the worker agent's notion_update action."""
-    _current_notion_context["token"] = token
-    _current_notion_context["page_id"] = page_id
+def set_dispatch_config(config):
+    """Set config for dispatcher actions (Notion token, database ID, souls dir)."""
+    _dispatch_config["notion_token"] = getattr(config, "notion_token", "")
+    _dispatch_config["notion_database_id"] = getattr(config, "notion_database_id", "")
+    _dispatch_config["souls_dir"] = getattr(config, "souls_dir", "")
+
+
+def _get_souls_dir() -> Path:
+    """Get souls directory from config or default."""
+    sd = _dispatch_config.get("souls_dir", "")
+    if sd:
+        return Path(sd)
+    return Path(__file__).parent.parent.parent / "souls"
 
 
 def dispatch(action: Action) -> str:
@@ -157,10 +168,8 @@ def dispatch(action: Action) -> str:
             )
 
         elif t == "read_skill":
-            from pathlib import Path
-            import os
-            souls_dir = Path(os.getenv("MACGENT_SOULS_DIR", "")) or Path(__file__).parent.parent.parent / "souls"
-            skills_dir = souls_dir.parent / "skills"
+            souls_dir = _get_souls_dir()
+            skills_dir = souls_dir / "skills"
             name = p.get("name", "")
             path = skills_dir / f"{name}.md"
             if path.exists():
@@ -168,16 +177,74 @@ def dispatch(action: Action) -> str:
             available = [f.stem for f in sorted(skills_dir.glob("*.md")) if f.stem != "README"]
             return f"Skill '{name}' not found. Available: {', '.join(available)}"
 
+        elif t == "write_skill":
+            souls_dir = _get_souls_dir()
+            name = p.get("name", "")
+            content = p.get("content", "")
+            if not name or not content:
+                return "ERROR: write_skill needs 'name' and 'content'"
+            path = souls_dir / "skills" / f"{name}.md"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+            return f"Skill '{name}' written to {path}"
+
+        elif t == "write_identity":
+            souls_dir = _get_souls_dir()
+            role = p.get("role", "manager")
+            content = p.get("content", "")
+            if not content:
+                return "ERROR: write_identity needs 'content'"
+            path = souls_dir / role / "IDENTITY.md"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+            return f"Identity written for {role}"
+
+        # ── Notion (generic) ──
+
+        elif t == "notion_query":
+            from macgent.actions import notion_actions
+            token = _dispatch_config["notion_token"]
+            db_id = _dispatch_config["notion_database_id"]
+            result = notion_actions.notion_query(
+                token, db_id,
+                filter=p.get("filter"),
+                sorts=p.get("sorts"),
+                page_size=int(p.get("page_size", 50)),
+            )
+            return json.dumps(result, default=str)
+
+        elif t == "notion_get":
+            from macgent.actions import notion_actions
+            token = _dispatch_config["notion_token"]
+            page_id = p.get("page_id", "")
+            result = notion_actions.notion_get(token, page_id)
+            return json.dumps(result, default=str) if result else "ERROR: Page not found"
+
         elif t == "notion_update":
             from macgent.actions import notion_actions
-            token = _current_notion_context.get("token", "")
-            page_id = _current_notion_context.get("page_id", "")
-            if not token or not page_id:
-                return "ERROR: No Notion context set for this task"
-            status = p.get("status")
-            note = p.get("note", "")
-            ok = notion_actions.update_task(token, page_id, status=status, note=note or None)
-            return "Notion card updated" if ok else "ERROR: Notion update failed"
+            token = _dispatch_config["notion_token"]
+            page_id = p.get("page_id", "")
+            properties = p.get("properties", {})
+            if not page_id or not properties:
+                return "ERROR: notion_update needs 'page_id' and 'properties'"
+            ok = notion_actions.notion_update(token, page_id, properties)
+            return "Notion page updated" if ok else "ERROR: Notion update failed"
+
+        elif t == "notion_create":
+            from macgent.actions import notion_actions
+            token = _dispatch_config["notion_token"]
+            db_id = _dispatch_config["notion_database_id"]
+            properties = p.get("properties", {})
+            if not properties:
+                return "ERROR: notion_create needs 'properties'"
+            page_id = notion_actions.notion_create(token, db_id, properties)
+            return json.dumps({"page_id": page_id}) if page_id else "ERROR: Notion create failed"
+
+        elif t == "notion_schema":
+            from macgent.actions import notion_actions
+            token = _dispatch_config["notion_token"]
+            db_id = _dispatch_config["notion_database_id"]
+            return notion_actions.notion_schema(token, db_id)
 
         elif t == "wait":
             seconds = float(p.get("seconds", 2))

@@ -1,20 +1,21 @@
-"""Manager role — heartbeat monitoring, Notion board, daily memory, task creation.
+"""Manager role — LLM-driven heartbeat with generic action dispatch.
 
-All task CRUD goes through Notion (notion_actions). SQLite is only used for
-messages (CEO reply routing), agent_log, monitor_state, and memory.
+The Manager is an agent loop: Python assembles context (soul + skills + memory),
+LLM decides what actions to take (query Notion, send Telegram, create tasks),
+Python executes them and feeds results back. Loop until HEARTBEAT_OK or max turns.
 """
 
+import json
 import logging
+from pathlib import Path
+
 from macgent.roles.base import BaseRole
+from macgent.actions.dispatcher import set_dispatch_config
 from macgent.monitors.email_monitor import EmailMonitor
-from macgent.prompts.role_prompts import (
-    MANAGER_CLASSIFY_PROMPT,
-    MANAGER_BOARD_PROMPT,
-    MANAGER_ENHANCE_PROMPT,
-)
-from macgent.actions import notion_actions
 
 logger = logging.getLogger("macgent.roles.manager")
+
+MAX_TURNS = 15
 
 
 def _send_telegram(config, text: str):
@@ -32,23 +33,13 @@ class ManagerRole(BaseRole):
     def __init__(self, config, db, memory):
         super().__init__(config, db, memory)
         self.monitors = [EmailMonitor()]
-        self._notion_ready = False
+        # Push config to dispatcher so Notion actions have token/db_id
+        set_dispatch_config(config)
 
-    @property
-    def _token(self):
-        return self.config.notion_token
-
-    @property
-    def _db_id(self):
-        return self.config.notion_database_id
-
-    def _ensure_notion(self):
-        """Ensure Notion schema is set up (runs once per session)."""
-        if self._notion_ready:
-            return
-        if self._token and self._db_id:
-            notion_actions.ensure_schema(self._token, self._db_id)
-            self._notion_ready = True
+    def _is_bootstrapped(self) -> bool:
+        """Check if bootstrap has been completed (IDENTITY.md exists)."""
+        identity_path = Path(self.config.souls_dir) / "manager" / "IDENTITY.md"
+        return identity_path.exists()
 
     def should_wake_early(self) -> bool:
         row = self.db.conn.execute(
@@ -62,361 +53,214 @@ class ManagerRole(BaseRole):
         self.db.conn.commit()
 
     def tick(self) -> bool:
-        """One heartbeat. Returns True if something actionable happened, False for HEARTBEAT_OK."""
+        """One heartbeat cycle. Returns True if something happened."""
         logger.info("Manager tick starting")
         self.db.log("manager", "tick_start")
-        self._ensure_notion()
 
         woken_early = self.should_wake_early()
         if woken_early:
             logger.info("Manager woken by external notification")
-            print("  Manager: Woken by external notification!")
             self.clear_wake_request()
 
-        # 1. Load context: curated memory + recent daily logs are loaded via build_context()
-        heartbeat_instructions = self.memory.get_heartbeat_instructions()
-        recent_logs = self.memory.get_recent_memory(days=3)
-        if recent_logs:
-            print(f"  Manager: Loaded {len(recent_logs)} chars of recent memory")
+        # 1. Build full context (Python does this automatically)
+        #    soul.md + IDENTITY.md + all skills + MEMORY.md + daily logs + FAISS recall
+        system = self.get_system_prompt()
 
-        anything_happened = False
+        # 2. Gather structured input
+        ceo_messages = self.db.get_unread_messages("manager")
+        ceo_texts = []
+        for msg in ceo_messages:
+            if msg["from_role"] == "ceo":
+                ceo_texts.append(msg["content"])
+        if ceo_messages:
+            self.db.mark_messages_read("manager")
 
-        # 2. Route incoming CEO messages first (so blocked/clarification checks see them)
-        if self._handle_ceo_messages():
-            anything_happened = True
-
-        # 3. Check clarifications (CEO replied to a pending Inbox question)
-        if self._check_pending_clarifications():
-            anything_happened = True
-
-        # 4. Check blocked tasks (worker set Blocked, or CEO replied to a blocker)
-        if self._check_blocked_tasks():
-            anything_happened = True
-
-        # 5. Check notification sources (email etc.)
-        all_notifications = []
+        # Check email monitors
+        email_items = []
         for monitor in self.monitors:
             try:
                 items = monitor.check(self.db)
-                all_notifications.extend(items)
+                email_items.extend(items)
             except Exception as e:
                 logger.error(f"Monitor {monitor.source_name} failed: {e}")
-                self.db.log("manager", "monitor_error", f"{monitor.source_name}: {e}")
 
-        # 6. Classify and create tasks from notifications
-        created = 0
-        for notif in all_notifications:
+        # 3. Build the task prompt
+        if not self._is_bootstrapped():
+            # First time: load bootstrap instructions
+            bootstrap_path = Path(self.config.souls_dir) / "manager" / "bootstrap.md"
+            if bootstrap_path.exists():
+                task_prompt = bootstrap_path.read_text()
+            else:
+                task_prompt = "No bootstrap.md found. Introduce yourself to the CEO and set up."
+        else:
+            # Normal heartbeat
+            heartbeat_path = Path(self.config.souls_dir) / "manager" / "heartbeat.md"
+            task_prompt = heartbeat_path.read_text() if heartbeat_path.exists() else "Run heartbeat checks."
+
+            # Add CEO messages
+            if ceo_texts:
+                task_prompt += "\n\n## CEO Messages (just arrived)\n"
+                for i, text in enumerate(ceo_texts, 1):
+                    task_prompt += f"\n{i}. {text}\n"
+
+            # Add email notifications
+            if email_items:
+                task_prompt += "\n\n## New Emails\n"
+                for item in email_items:
+                    task_prompt += f"\n- From: {item.get('from', '?')} | Subject: {item.get('subject', '?')}\n"
+
+            # Add wake info
+            if woken_early:
+                task_prompt += "\n\n(You were woken early by an external notification — likely a new CEO message.)\n"
+
+        # 4. Agent loop: LLM decides actions, Python executes them
+        conversation = [{"role": "user", "content": task_prompt}]
+        anything_happened = False
+
+        for turn in range(MAX_TURNS):
             try:
-                page_id = self._classify_and_create(notif)
-                if page_id:
-                    created += 1
+                response = self.call_llm(conversation, system=system, max_tokens=2048)
             except Exception as e:
-                logger.error(f"Failed to classify notification: {e}")
+                logger.error(f"Manager LLM call failed: {e}")
+                break
 
-        if created:
-            print(f"  Manager: Created {created} new tasks from notifications")
-            anything_happened = True
+            logger.debug(f"Manager turn {turn}: {response[:200]}")
 
-        # 7. Check stale tasks (re-queue if worker likely died)
-        stale_count = self._check_stale_tasks()
-        if stale_count:
-            anything_happened = True
+            # Check for HEARTBEAT_OK
+            if "HEARTBEAT_OK" in response:
+                if not anything_happened:
+                    print("HEARTBEAT_OK")
+                    self.db.log("manager", "tick_done", "HEARTBEAT_OK")
+                else:
+                    self.db.log("manager", "tick_done")
+                return anything_happened
 
-        # 8. Board health check
-        ready = notion_actions.list_tasks(self._token, self._db_id, status="Ready")
-        in_progress = notion_actions.list_tasks(self._token, self._db_id, status="In Progress")
-        if ready or in_progress:
-            anything_happened = True
-        board_summary = f"Board: {len(ready)} ready, {len(in_progress)} in progress."
+            # Parse actions from response
+            data = self.parse_json(response)
+            if not data:
+                # LLM returned plain text — treat as done
+                logger.debug(f"Manager returned non-JSON: {response[:100]}")
+                break
 
-        # HEARTBEAT_OK — nothing actionable this cycle
-        if not anything_happened:
+            # Execute actions
+            actions = data.get("actions", [])
+            if not actions and "action" in data:
+                actions = [data["action"]]
+            if not actions:
+                # Single action without wrapper
+                if "type" in data:
+                    actions = [data]
+
+            results = []
+            for action_dict in actions:
+                action_type = action_dict.get("type", "")
+                params = action_dict.get("params", {})
+                result = self._execute_action(action_type, params)
+                results.append(f"[{action_type}] {result}")
+                anything_happened = True
+
+                # Log significant actions
+                if action_type in ("notion_create", "notion_update", "send_telegram",
+                                   "write_skill", "write_identity"):
+                    self.db.log("manager", action_type, str(params)[:200])
+
+            # Feed results back to LLM
+            result_text = "\n".join(results) if results else "(no actions executed)"
+            conversation.append({"role": "assistant", "content": response})
+            conversation.append({"role": "user", "content": f"Action results:\n{result_text}\n\nContinue with next step, or respond HEARTBEAT_OK if done."})
+
+        # Max turns reached or LLM stopped
+        if anything_happened:
+            self.memory.write_daily_log(self.db, "Heartbeat completed with actions.")
+            self.db.log("manager", "tick_done")
+        else:
             print("HEARTBEAT_OK")
             self.db.log("manager", "tick_done", "HEARTBEAT_OK")
-            return False
-
-        # 9. Write daily memory log (only when something happened)
-        log_parts = []
-        if created:
-            log_parts.append(f"Heartbeat: {created} new tasks from email.")
-        log_parts.append(board_summary)
-        self.memory.write_daily_log(self.db, " ".join(log_parts))
-
-        self.db.log("manager", "tick_done")
-        logger.info("Manager tick done")
-        return True
+        return anything_happened
 
     def handle_new_ceo_task(self, task_text: str) -> str | None:
-        """Process a new task from CEO (Telegram). Returns page_id or None."""
-        self._ensure_notion()
+        """Process a new task from CEO (via CLI). Returns page_id or None.
+
+        This is a simplified path for `macgent task '...'` — goes through the
+        LLM agent loop with a specific task creation prompt.
+        """
         system = self.get_system_prompt()
-        prompt = MANAGER_ENHANCE_PROMPT.format(task_text=task_text)
+        prompt = (
+            f"The CEO just gave you a new task via command line:\n\n"
+            f'"{task_text}"\n\n'
+            f"Process it: enhance the description, decide priority, and create it on the Notion board. "
+            f"If you need clarification, create it with backlog/inbox status and note the question. "
+            f"Use notion_create to add it to the board. "
+            f"Respond with the action to create the task."
+        )
 
-        try:
-            response = self.call_llm(
-                [{"role": "user", "content": prompt}],
-                system=system, max_tokens=512,
-            )
-        except Exception as e:
-            logger.error(f"LLM enhance failed: {e}")
-            return self._create_task(task_text[:80], task_text, 2, "telegram")
+        conversation = [{"role": "user", "content": prompt}]
+        page_id = None
 
-        data = self.parse_json(response)
-        if not data:
-            return self._create_task(task_text[:80], task_text, 2, "telegram")
-
-        title = data.get("title", task_text[:80])
-        description = data.get("description", task_text)
-        priority = data.get("priority", 3)
-
-        if data.get("ready", True):
-            page_id = self._create_task(title, description, priority, "telegram")
-            _send_telegram(
-                self.config,
-                f"Got it! Created task: **{title}**\nAdded to your Notion planning board."
-            )
-            return page_id
-        else:
-            # Create in Notion as Inbox (waiting for clarification)
-            question = data.get("question", "Could you provide more details?")
-            page_id = notion_actions.create_task(
-                self._token, self._db_id,
-                title=title, description=description,
-                priority=priority, source="telegram",
-                status="Inbox", note=f"Awaiting clarification: {question}",
-            )
-            if page_id:
-                self.db.send_message("manager", "ceo", page_id, question)
-                _send_telegram(
-                    self.config,
-                    f"Quick question before I add this to the board:\n\n{question}"
-                )
-                print(f"  Manager: Asked CEO for clarification on '{title}': {question[:60]}")
-                self.db.log("manager", "clarification_sent", question[:80], page_id)
-                self.memory.write_daily_log(
-                    self.db,
-                    f"Asked CEO for clarification on '{title}': {question}"
-                )
-            return page_id
-
-    def _check_pending_clarifications(self) -> bool:
-        """Check if CEO replied to any pending Inbox tasks. Returns True if any resolved."""
-        inbox_tasks = notion_actions.list_tasks(self._token, self._db_id, status="Inbox")
-        resolved = False
-        for task in inbox_tasks:
-            page_id = task["page_id"]
-            ceo_msgs = self.db.get_unread_messages_for_task(page_id, from_role="ceo")
-            if not ceo_msgs:
-                continue
-            reply = ceo_msgs[-1]["content"]
-            self.db.mark_messages_read("manager", page_id)
-
-            enhanced_desc = task["description"] + f"\n\nCEO clarification: {reply}"
-            notion_actions.update_task(
-                self._token, page_id,
-                status="Ready",
-                note=f"CEO clarified: {reply[:500]}",
-            )
-            # Also update description
+        for turn in range(5):
             try:
-                import httpx
-                httpx.patch(
-                    f"{notion_actions.NOTION_API}/pages/{page_id}",
-                    headers=notion_actions._headers(self._token),
-                    json={"properties": {"Description": {"rich_text": [{"text": {"content": enhanced_desc[:2000]}}]}}},
-                    timeout=10,
-                )
-            except Exception:
-                pass
+                response = self.call_llm(conversation, system=system, max_tokens=2048)
+            except Exception as e:
+                logger.error(f"Manager LLM call failed: {e}")
+                break
 
-            _send_telegram(
-                self.config,
-                f"Thanks! **{task['title']}** is now on the board and ready to work on."
-            )
-            print(f"  Manager: Clarification received, task '{task['title']}' → Ready")
-            self.memory.write_daily_log(
-                self.db,
-                f"CEO clarified '{task['title']}': {reply[:100]}. Moved to Ready."
-            )
-            resolved = True
-        return resolved
+            data = self.parse_json(response)
+            if not data:
+                break
 
-    def _handle_ceo_messages(self) -> bool:
-        """Route CEO messages: to oldest waiting task (Inbox/Blocked) first, else as new tasks."""
-        msgs = self.db.get_unread_messages("manager")
-        if not msgs:
-            return False
+            actions = data.get("actions", [])
+            if not actions and "action" in data:
+                actions = [data["action"]]
+            if not actions and "type" in data:
+                actions = [data]
 
-        handled = False
-        for msg in msgs:
-            if msg["from_role"] != "ceo":
-                continue
+            results = []
+            for action_dict in actions:
+                action_type = action_dict.get("type", "")
+                params = action_dict.get("params", {})
+                result = self._execute_action(action_type, params)
+                results.append(f"[{action_type}] {result}")
 
-            # Already bound to a specific task — nothing to re-route
-            if msg.get("task_id"):
-                handled = True
-                continue
+                # Capture page_id from notion_create
+                if action_type == "notion_create" and "page_id" in result:
+                    try:
+                        result_data = json.loads(result)
+                        page_id = result_data.get("page_id")
+                    except (json.JSONDecodeError, TypeError):
+                        pass
 
-            # Find oldest task waiting for CEO input (Inbox or Blocked)
-            waiting = (
-                notion_actions.list_tasks(self._token, self._db_id, status="Inbox") +
-                notion_actions.list_tasks(self._token, self._db_id, status="Blocked")
-            )
-            waiting.sort(key=lambda t: t.get("last_edited_time", ""))
+            if page_id:
+                self.db.log("manager", "task_created", task_text[:100], page_id)
+                self.memory.write_daily_log(self.db, f"Created task from CLI: {task_text[:80]}")
+                break
 
-            if waiting:
-                target = waiting[0]
-                page_id = target["page_id"]
-                # Associate this reply with the waiting task so the resolution methods find it
-                self.db.send_message("ceo", "manager", page_id, msg["content"])
-                print(f"  Manager: CEO reply → task '{target['title']}' ({target['status']}): {msg['content'][:60]}")
-            else:
-                print(f"  Manager: New CEO request: {msg['content'][:80]}")
-                self.handle_new_ceo_task(msg["content"])
-            handled = True
+            conversation.append({"role": "assistant", "content": response})
+            result_text = "\n".join(results)
+            conversation.append({"role": "user", "content": f"Results:\n{result_text}\n\nDone? If task was created, you can stop."})
 
-        self.db.mark_messages_read("manager")
-        return handled
-
-    def _classify_and_create(self, notification: dict) -> str | None:
-        """Classify an email notification and create a task if actionable. Returns page_id."""
-        subject = notification.get("subject", "No subject")
-        sender = notification.get("from", "Unknown")
-        date = notification.get("date", "")
-
-        system = self.get_system_prompt()
-        try:
-            response = self.call_llm(
-                [{"role": "user", "content": f"Email from: {sender}\nSubject: {subject}\nDate: {date}\n\nClassify this."}],
-                system=system + "\n\n" + MANAGER_CLASSIFY_PROMPT,
-                max_tokens=512,
-            )
-        except Exception as e:
-            logger.error(f"LLM classify failed: {e}")
-            return None
-
-        data = self.parse_json(response)
-        if not data or not data.get("actionable", False):
-            return None
-
-        return self._create_task(
-            data.get("title", subject[:80]),
-            data.get("description", f"From: {sender}\nSubject: {subject}"),
-            min(max(data.get("priority", 3), 1), 4),
-            f"email:{sender}",
-        )
-
-    def _create_task(self, title: str, description: str, priority: int,
-                     source: str) -> str | None:
-        """Create task in Notion. Returns page_id."""
-        page_id = notion_actions.create_task(
-            self._token, self._db_id,
-            title=title, description=description,
-            priority=priority, source=source,
-            status="Ready",
-        )
-        if page_id:
-            print(f"  Manager: Created task '{title}' (P{priority})")
-            self.db.log("manager", "task_created", title, page_id)
-            self.memory.write_daily_log(
-                self.db, f"Created task '{title}' (P{priority}) from {source}."
-            )
         return page_id
 
-    def _check_stale_tasks(self) -> int:
-        """Re-queue stale In Progress tasks (worker likely died). Returns count."""
-        stale = notion_actions.get_stale_tasks(
-            self._token, self._db_id,
-            minutes=self.config.stale_task_minutes,
-        )
-        for task in stale:
-            notion_actions.update_task(
-                self._token, task["page_id"],
-                status="Ready", note="Re-queued: worker appears stale.",
-            )
-            print(f"  Manager: Re-queued stale task '{task['title']}'")
-            self.db.log("manager", "task_requeued", task["title"], task["page_id"])
-        return len(stale)
+    def _execute_action(self, action_type: str, params: dict) -> str:
+        """Execute a single action. Handles both dispatcher actions and manager-specific ones."""
+        from macgent.actions.dispatcher import dispatch
+        from macgent.models import Action
 
-    def _check_blocked_tasks(self) -> bool:
-        """Check for Blocked tasks. If CEO replied, re-queue. Otherwise, ask CEO via Telegram."""
-        blocked = notion_actions.list_tasks(self._token, self._db_id, status="Blocked")
-        if not blocked:
-            return False
+        # Manager-specific: send_telegram
+        if action_type == "send_telegram":
+            text = params.get("text", params.get("message", ""))
+            if text:
+                _send_telegram(self.config, text)
+                return f"Telegram sent: {text[:80]}"
+            return "ERROR: send_telegram needs 'text'"
 
-        handled = False
-        for task in blocked:
-            page_id = task["page_id"]
+        # Manager-specific: start_worker (signals that a task should be run)
+        if action_type == "start_worker":
+            # This is handled by the daemon loop, not directly here
+            return "Worker start queued (daemon will pick it up)"
 
-            # Check if CEO already replied to this blocker
-            ceo_reply = self.db.get_unread_messages_for_task(page_id, from_role="ceo")
-            if ceo_reply:
-                reply = ceo_reply[-1]["content"]
-                self.db.mark_messages_read("manager", page_id)
-                enhanced = task["description"] + f"\n\nCEO input: {reply}"
-                # Update description + status in Notion
-                notion_actions.update_task(
-                    self._token, page_id,
-                    status="Ready", note=f"CEO input: {reply[:200]}",
-                )
-                try:
-                    import httpx
-                    httpx.patch(
-                        f"{notion_actions.NOTION_API}/pages/{page_id}",
-                        headers=notion_actions._headers(self._token),
-                        json={"properties": {"Description": {"rich_text": [{"text": {"content": enhanced[:2000]}}]}}},
-                        timeout=10,
-                    )
-                except Exception:
-                    pass
-                _send_telegram(self.config, f"Got it! Re-queuing **{task['title']}** with your input.")
-                self.memory.write_daily_log(
-                    self.db, f"CEO input for '{task['title']}': {reply[:100]}. Re-queued."
-                )
-                handled = True
-                continue
-
-            # Check if we already asked CEO about this (avoid repeat Telegram messages)
-            existing_msgs = self.db.get_task_messages(page_id)
-            already_asked = any(
-                m["from_role"] == "manager" and m["to_role"] == "ceo" for m in existing_msgs
-            )
-            if already_asked:
-                continue
-
-            # LLM call: formulate a clear question for CEO based on the blocker
-            system = self.get_system_prompt()
-            task_info = (
-                f"Task: {task['title']}\n"
-                f"Description: {task['description']}\n"
-                f"Notes (blocker reason): {task.get('notes', '')[:500]}"
-            )
-            prompt = (
-                f"This task is BLOCKED. The worker couldn't proceed.\n\n{task_info}\n\n"
-                f"Formulate ONE clear, specific question to ask the CEO so this task can be unblocked. "
-                f"Respond with JSON: {{\"question\": \"...\"}}"
-            )
-
-            try:
-                response = self.call_llm(
-                    [{"role": "user", "content": prompt}],
-                    system=system, max_tokens=256,
-                )
-                data = self.parse_json(response)
-                question = (
-                    data.get("question", f"Task '{task['title']}' is blocked. What should I do?")
-                    if data
-                    else f"Task '{task['title']}' is blocked. Can you help?"
-                )
-            except Exception:
-                question = f"Task '{task['title']}' is blocked: {task.get('notes', 'unknown reason')[:200]}"
-
-            self.db.send_message("manager", "ceo", page_id, question)
-            _send_telegram(self.config, f"Task **{task['title']}** is blocked:\n\n{question}")
-            self.db.log("manager", "blocked_question", question[:80], page_id)
-            self.memory.write_daily_log(
-                self.db, f"Asked CEO about blocked task '{task['title']}': {question[:100]}"
-            )
-            handled = True
-
-        return handled
+        # All other actions go through dispatcher
+        try:
+            action = Action(type=action_type, params=params, reasoning="manager action")
+            return dispatch(action)
+        except Exception as e:
+            return f"ERROR: {e}"
