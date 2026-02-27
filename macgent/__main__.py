@@ -1,6 +1,7 @@
 import sys
 import logging
 import shutil
+import os
 from pathlib import Path
 
 
@@ -29,7 +30,9 @@ def _run_setup_wizard(config, env_path: Path):
     Never involves the LLM — pure Python/terminal.
     Returns an updated config object.
     """
-    needs_setup = not config.telegram_bot_token or not config.telegram_chat_id
+    has_name = bool(os.getenv("MACGENT_NAME", "").strip())
+    has_workspace = bool(os.getenv("MACGENT_WORKSPACE_DIR", "").strip())
+    needs_setup = (not has_name) or (not has_workspace) or (not config.telegram_bot_token) or (not config.telegram_chat_id)
     if not needs_setup:
         return config
 
@@ -37,10 +40,24 @@ def _run_setup_wizard(config, env_path: Path):
     print("=" * 60)
     print("  macgent — first-time setup")
     print("=" * 60)
-    print(f"\nWorkspace: {config.workspace_dir}")
-    print(f"Log file:  {config.log_file}")
+    suggested_workspace = str((Path.cwd() / "workspace").resolve())
+    print(f"\nSuggested workspace: {suggested_workspace}")
+    print(f"Current workspace:   {config.workspace_dir}")
+    print(f"Current log file:    {config.log_file}")
 
     new_values = {}
+
+    # ── Core identity/workspace ──────────────────────────────
+    if not has_name:
+        default_name = config.macgent_name or "MacGent"
+        name = input(f"Agent name [{default_name}]: ").strip() or default_name
+        new_values["MACGENT_NAME"] = name
+
+    if not has_workspace:
+        raw_workspace = input(f"Workspace directory [{suggested_workspace}]: ").strip() or suggested_workspace
+        workspace_dir = str(Path(raw_workspace).expanduser().resolve())
+        new_values["MACGENT_WORKSPACE_DIR"] = workspace_dir
+        new_values["MACGENT_LOG_FILE"] = str(Path(workspace_dir) / "macgent.log")
 
     # ── Telegram ──────────────────────────────────────────────
     if not config.telegram_bot_token or not config.telegram_chat_id:
@@ -68,7 +85,6 @@ def _run_setup_wizard(config, env_path: Path):
         # Reload env + config
         from dotenv import load_dotenv
         load_dotenv(str(env_path), override=True)
-        import os
         for key, val in new_values.items():
             os.environ[key] = val
         from macgent.config import Config
@@ -132,6 +148,9 @@ def main():
     from macgent.config import Config, MACGENT_DIR
     config = Config.from_env()
 
+    # Interactive setup wizard for first-run config (name/workspace/telegram)
+    config = _run_setup_wizard(config, env_file)
+
     # Ensure data directories exist
     MACGENT_DIR.mkdir(parents=True, exist_ok=True)
     Path(config.workspace_dir).mkdir(parents=True, exist_ok=True)
@@ -146,15 +165,16 @@ def main():
         print("ERROR: Set REASONING_API_KEY in .env file")
         sys.exit(1)
 
-    # Interactive setup wizard for missing Telegram config (terminal only, no LLM)
-    config = _run_setup_wizard(config, env_file)
-
     # Detect legacy mode: if first arg isn't a known subcommand, run worker Agent directly
     SUBCOMMANDS = {"task", "daemon", "status", "log", "answer", "soul", "-h", "--help"}
     if len(sys.argv) > 1 and sys.argv[1] not in SUBCOMMANDS:
         task_text = " ".join(sys.argv[1:])
+        from macgent.db import DB
+        from macgent.memory import MemoryManager
         from macgent.agent import Agent
-        agent = Agent(config, task_description=task_text)
+        db = DB(config.db_path)
+        memory = MemoryManager(config)
+        agent = Agent(config, db=db, memory=memory, task_description=task_text)
         state = agent.run(task_text)
         print(f"\n{'='*60}")
         print(f"Task: {task_text}")
@@ -201,14 +221,9 @@ def main():
     args = parser.parse_args()
 
     if args.command is None:
-        parser.print_help()
-        print()
-        print("Quick start:")
-        print("  uv run macgent 'Go to news.ycombinator.com and tell me the top 3 stories'")
-        print("  uv run macgent task 'Read my recent emails and summarize them'")
-        print("  uv run macgent daemon          # Start the manager heartbeat")
-        print("  uv run macgent status           # Show current tasks")
-        sys.exit(1)
+        print("No subcommand provided. Running one startup heartbeat (bootstrap if needed).")
+        _run_daemon(config, config.daemon_interval, once=True)
+        return
 
     if args.command == "task":
         description = " ".join(args.description)

@@ -60,7 +60,7 @@ Write what you know (and what you've asked) to `manager/user.md`. Leave the CEO'
 
 ## 4. Define your identity
 
-Choose a name. Write your identity, communication style, and approach to `manager/IDENTITY.md`.
+Choose a name. Write your identity, communication style, and approach to `manager/identity.md`.
 
 **This file marks bootstrap as complete** — your next tick will run the normal heartbeat instead of this file.
 

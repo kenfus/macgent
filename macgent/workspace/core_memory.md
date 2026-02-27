@@ -1,6 +1,6 @@
 # Core Memory Contract
 
-This file is always injected into every LLM call context, together with soul and skills.
+This file is always injected into every LLM call context, together with identity, soul, and skills.
 
 ## Memory Retrieval Policy
 

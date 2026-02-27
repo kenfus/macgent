@@ -46,9 +46,24 @@ class MemoryManager:
             return soul_path.read_text()
         return f"You are the {role} agent."
 
+    def load_identity(self, role: str) -> str:
+        """Load role identity from preferred lowercase file with uppercase fallback."""
+        lower = self.workspace_dir / role / "identity.md"
+        upper = self.workspace_dir / role / "IDENTITY.md"
+        if lower.exists():
+            return lower.read_text()
+        if upper.exists():
+            return upper.read_text()
+        return ""
+
     def load_core_memory(self) -> str:
         if self.core_memory_path.exists():
             return self.core_memory_path.read_text()
+        # Backward-compat fallback for older layout.
+        for role in ("manager", "worker"):
+            legacy = self.workspace_dir / role / "core_memory.md"
+            if legacy.exists():
+                return legacy.read_text()
         return ""
 
     def load_curated_memory(self, role: str) -> str:
@@ -237,44 +252,61 @@ class MemoryManager:
                     parts.append(content)
         return "\n\n---\n\n".join(parts)
 
+    @staticmethod
+    def combine_markdown_sections(parts: list[tuple[str, str]]) -> str:
+        """Combine markdown sections into one context string."""
+        chunks = []
+        for title, body in parts:
+            b = (body or "").strip()
+            if not b:
+                continue
+            chunks.append(f"# {title}\n\n{b}")
+        return "\n\n---\n\n".join(chunks)
+
     def build_context(self, db, role: str, task_id=None, task_description: str = "") -> str:
-        parts = []
+        sections: list[tuple[str, str]] = []
 
         soul = self.load_soul(role)
         if soul:
-            parts.append(soul)
+            sections.append(("Soul", soul))
+
+        identity = self.load_identity(role)
+        if identity:
+            sections.append(("Identity", identity))
 
         skills = self.load_skills()
         if skills:
-            parts.append("\n---\n# Skills Reference\n\n" + skills)
+            sections.append(("Skills Reference", skills))
 
         core_memory = self.load_core_memory()
         if core_memory:
-            parts.append("\n---\n# Core Memory\n\n" + core_memory)
+            sections.append(("Core Memory", core_memory))
 
         curated = self.load_curated_memory(role)
         if curated:
-            parts.append("\n## Role Memory\n" + curated)
+            sections.append(("Role Memory", curated))
 
         recent = self.get_recent_memory(days=self.recent_days)
         if recent:
-            parts.append(f"\n## Recent Memory (last {self.recent_days} days)\n" + recent)
+            sections.append((f"Recent Memory (last {self.recent_days} days)", recent))
 
         if task_id:
             turns = self.get_short_term(db, task_id, limit=10)
             if turns:
-                parts.append("\n## Recent Task History")
+                lines = []
                 for t in turns:
-                    parts.append(f"[{t.get('role','?')}] ({t.get('type','?')}): {t.get('content','')}")
+                    lines.append(f"[{t.get('role','?')}] ({t.get('type','?')}): {t.get('content','')}")
+                sections.append(("Recent Task History", "\n".join(lines)))
 
         if task_description:
             memories = self.recall(db, role, task_description, top_k=self.top_k)
             if memories:
-                parts.append(f"\n## Relevant Memory Chunks (top {self.top_k})")
+                lines = []
                 for m in memories:
-                    parts.append(f"- [{m.get('category','memory')}] {m.get('content','')}")
+                    lines.append(f"- [{m.get('category','memory')}] {m.get('content','')}")
+                sections.append((f"Relevant Memory Chunks (top {self.top_k})", "\n".join(lines)))
 
-        return "\n".join(parts)
+        return self.combine_markdown_sections(sections)
 
     def write_daily_log(self, db, content: str, role: str = "manager"):
         today = datetime.date.today()

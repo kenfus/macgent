@@ -36,6 +36,14 @@ In `.env`, set API keys and `MACGENT_CONFIG_PATH`. In `macgent_config.json`, set
 
 ### First Task
 
+Run first-time setup + bootstrap heartbeat:
+
+```bash
+uv run macgent
+```
+
+The setup wizard asks for agent name + workspace path, copies templates from `macgent/workspace/`, then runs one startup heartbeat (`bootstrap.md` on first run).
+
 Run macgent with a simple task:
 
 ```bash
@@ -92,7 +100,7 @@ Load order is always core first, then learned skills.
 Available capabilities agents can use:
 
 - **[Browser Automation](./macgent/skills/browser_automation.md)** — Navigate, click, type, scroll in Safari
-- **[Agent Browser](./macgent/skills/agent_browser.md)** — Primary browser-task delegation runtime
+- **[Browser Agent](./macgent/skills/browser-agent.md)** — Primary browser-task delegation runtime
 - **[Email Operations](./macgent/skills/email_operations.md)** — Read/send emails via Mail app
 - **[Calendar](./macgent/skills/calendar_operations.md)** — Read events and check availability
 - **[iMessages](./macgent/skills/messages.md)** — Send/read iMessages

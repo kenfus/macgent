@@ -26,12 +26,43 @@ Load precedence is always: **core -> learned**.
 
 Memory is file-based (no database-backed memory retrieval). On every context build, the agent gets:
 
-1. `workspace/<role>/soul.md`
-2. Core + learned skills
-3. `workspace/core_memory.md`
-4. `workspace/<role>/MEMORY.md` (if present)
-5. Recent daily memory logs (`workspace/memory/daily/`, today + yesterday by default)
-6. Top-N relevant chunks from `workspace/memory/semantic_memories.jsonl` for the current task
+1. `workspace/<role>/identity.md` (with `IDENTITY.md` backward-compatible fallback)
+2. `workspace/<role>/soul.md`
+3. Core + learned skills
+4. `workspace/core_memory.md`
+5. `workspace/<role>/MEMORY.md` (if present)
+6. Recent daily memory logs (`workspace/memory/daily/`, today + yesterday by default)
+7. Top-N relevant chunks from `workspace/memory/semantic_memories.jsonl` for the current task
+
+This full context is attached to every LLM call through role/system prompt construction.
+
+## First-Run Startup Flow
+
+Running `uv run macgent` on first run prompts for:
+
+1. Agent name (`MACGENT_NAME`)
+2. Workspace path (`MACGENT_WORKSPACE_DIR`, suggested: `<repo>/workspace`)
+
+Then startup copies all template files from `macgent/workspace/` into the selected workspace (copy-if-missing), including:
+
+- `core_memory.md`
+- `manager/bootstrap.md`
+- `manager/soul.md`
+- `manager/identity.md`
+- `manager/heartbeat.md`
+- `worker/soul.md`
+- `worker/identity.md`
+
+After template copy, Manager bootstrap starts from `manager/bootstrap.md`.
+
+## Manager Runtime Rule
+
+Manager Python code should stay thin:
+- It loads context and `manager/bootstrap.md` or `manager/heartbeat.md`.
+- The LLM decides what actions to run.
+- Python executes those actions and loops until `HEARTBEAT_OK`.
+
+Operational policy belongs in markdown (`heartbeat.md`, `bootstrap.md`, soul/skills), not hardcoded Python branches.
 
 ## Skill Authoring Contract
 
@@ -56,7 +87,7 @@ Each skill markdown should include these sections in order:
 | Skill | Type | Dispatcher Actions | Runtime Module |
 |---|---|---|---|
 | `browser_automation.md` | Core | `navigate`, `click`, `type`, `scroll`, `execute_js`, `wait` | `macgent/actions/dispatcher.py`, `macgent/actions/safari_actions.py` |
-| `agent_browser.md` | Core | `browser_task` | `macgent/actions/browser_use_action.py`, `macgent/actions/agent_browser.py` |
+| `browser-agent.md` | Core | `browser_task` | `macgent/actions/browser_use_action.py`, `macgent/actions/agent_browser.py` |
 | `macos.md` | Core | `mail_*`, `calendar_*`, `imessage_*`, `open_app` | `macgent/actions/mail_actions.py`, `calendar_actions.py`, `imessage_actions.py` |
 | `email_operations.md` | Core | `mail_read`, `mail_read_full`, `mail_send`, `mail_reply` | `macgent/actions/mail_actions.py` |
 | `files.md` | Core | `read_file`, `write_file`, `edit_file`, `delete_file` | `macgent/actions/dispatcher.py` |

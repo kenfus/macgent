@@ -10,6 +10,9 @@ MACGENT_DIR = Path.home() / ".macgent"
 
 @dataclass
 class Config:
+    # Agent identity
+    macgent_name: str = "MacGent"
+
     # Reasoning model (text-only) — defaults to free OpenRouter models
     reasoning_api_base: str = "https://openrouter.ai/api/v1"
     reasoning_api_key: str = ""
@@ -116,6 +119,7 @@ class Config:
         model_cfg = cls._load_model_config(cfg_path)
 
         return cls(
+            macgent_name=os.getenv("MACGENT_NAME", cls.macgent_name),
             reasoning_api_base=os.getenv("REASONING_API_BASE", cls.reasoning_api_base),
             reasoning_api_key=os.getenv("REASONING_API_KEY", ""),
             reasoning_model=os.getenv("REASONING_MODEL", cls.reasoning_model),
