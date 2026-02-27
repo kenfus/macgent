@@ -325,13 +325,6 @@ def _sync_daemon_loop(config, interval, once):
     db = DB(config.db_path)
     memory = MemoryManager(config)
 
-    # Embed recent daily memory logs on startup
-    try:
-        memory.embed_past_logs(db, days=3)
-    except Exception as e:
-        import logging
-        logging.getLogger("macgent").warning(f"embed_past_logs failed: {e}")
-
     manager = ManagerRole(config, db, memory)
     worker = WorkerRole(config, db, memory)
 

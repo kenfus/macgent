@@ -41,6 +41,7 @@ When there's nothing to do: respond with exactly `HEARTBEAT_OK`
 - `manager/IDENTITY.md` — your identity, name, communication style, notes to yourself
 - `manager/user.md` — what you know about the CEO: their name, projects, preferences, context
 - `manager/MEMORY.md` — curated long-term memory (update when you learn something important)
+- `core_memory.md` — global memory policy injected into every call
 - `manager/heartbeat.md` — your heartbeat checklist
 - `manager/soul.md` — this file: your core instructions (you can edit this too)
 - `skills/notion.md` — learned Notion board reference (written during bootstrap)

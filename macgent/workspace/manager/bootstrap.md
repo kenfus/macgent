@@ -14,7 +14,7 @@ These are already loaded into your context — read the relevant sections as you
 | `browser` | Safari navigation, clicking, typing, JS execution |
 | `macos` | App control, calendar, iMessage, Mail |
 | `communication` | When and how to message the CEO, message format rules |
-| `memory` | How to use MEMORY.md and daily logs |
+| `memory` | How to use core_memory.md, daily logs, and semantic memory chunks |
 | `skills/notion.md` | *(you'll write this)* — Notion board reference |
 
 ---

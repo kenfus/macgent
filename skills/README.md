@@ -16,6 +16,7 @@ Source: `macgent/skills/*.md`
 - [JavaScript](../macgent/skills/javascript.md)
 - [macOS Direct Actions](../macgent/skills/macos.md)
 - [Evaluate Image](../macgent/skills/evaluate_image.md)
+- [Brave Search](../macgent/skills/brave_search.md)
 
 Core skills must map to runtime actions in Python modules.
 
@@ -30,6 +31,7 @@ Learned skills are markdown-only references and do not require Python implementa
 
 - Browser action loop: `macgent/actions/dispatcher.py` + `macgent/actions/safari_actions.py`
 - Browser delegation action: `browser_task` -> `macgent/actions/browser_use_action.py`
+- Search action: `brave_search` -> `macgent/actions/brave_search.py`
 - macOS direct actions: `mail_actions.py`, `calendar_actions.py`, `imessage_actions.py`
 - Skills loading order: `macgent/memory.py::load_skills`
 

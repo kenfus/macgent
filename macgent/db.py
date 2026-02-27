@@ -59,25 +59,6 @@ class DB:
                 metadata TEXT
             );
 
-            CREATE TABLE IF NOT EXISTS memory (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                task_id INTEGER,
-                role TEXT NOT NULL,
-                turn_number INTEGER NOT NULL DEFAULT 0,
-                type TEXT NOT NULL,
-                content TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-
-            CREATE TABLE IF NOT EXISTS memories (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                category TEXT NOT NULL DEFAULT 'lesson',
-                task_id INTEGER,
-                confidence REAL NOT NULL DEFAULT 1.0,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
         """)
         self.conn.commit()
         self._migrate()
@@ -193,59 +174,6 @@ class DB:
             (source, last_check, metadata, last_check, metadata),
         )
         self.conn.commit()
-
-    # ── Short-term Memory (per-task turns) ──
-
-    def record_turn(self, task_id: int, role: str, turn_type: str, content: str,
-                    turn_number: int = 0):
-        self.conn.execute(
-            "INSERT INTO memory (task_id, role, turn_number, type, content) VALUES (?, ?, ?, ?, ?)",
-            (task_id, role, turn_number, turn_type, content),
-        )
-        self.conn.commit()
-
-    def get_short_term(self, task_id: int, role: str | None = None,
-                       limit: int = 10) -> list[dict]:
-        if role:
-            rows = self.conn.execute(
-                "SELECT * FROM memory WHERE task_id = ? AND role = ? ORDER BY created_at DESC LIMIT ?",
-                (task_id, role, limit),
-            ).fetchall()
-        else:
-            rows = self.conn.execute(
-                "SELECT * FROM memory WHERE task_id = ? ORDER BY created_at DESC LIMIT ?",
-                (task_id, limit),
-            ).fetchall()
-        return [dict(r) for r in reversed(rows)]
-
-    # ── Long-term Memory (text storage, FAISS handles vectors) ──
-
-    def store_memory(self, role: str, content: str, category: str = "lesson",
-                     task_id: int | None = None, confidence: float = 1.0) -> int:
-        cur = self.conn.execute(
-            "INSERT INTO memories (role, content, category, task_id, confidence) VALUES (?, ?, ?, ?, ?)",
-            (role, content, category, task_id, confidence),
-        )
-        self.conn.commit()
-        return cur.lastrowid
-
-    def get_memory_by_id(self, memory_id: int) -> dict | None:
-        row = self.conn.execute(
-            "SELECT * FROM memories WHERE id = ?", (memory_id,),
-        ).fetchone()
-        return dict(row) if row else None
-
-    def get_all_memories(self, role: str | None = None) -> list[dict]:
-        if role:
-            rows = self.conn.execute(
-                "SELECT * FROM memories WHERE role = ? ORDER BY created_at",
-                (role,),
-            ).fetchall()
-        else:
-            rows = self.conn.execute(
-                "SELECT * FROM memories ORDER BY created_at",
-            ).fetchall()
-        return [dict(r) for r in rows]
 
     def close(self):
         self.conn.close()

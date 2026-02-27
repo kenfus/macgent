@@ -5,6 +5,7 @@ import base64
 from pathlib import Path
 from macgent.models import Action
 from macgent.actions import safari_actions, mouse, calendar_actions
+from macgent.actions.brave_search import brave_web_search_json
 from macgent.perception.safari import execute_js_in_safari
 from macgent.utils_osascript import run_osascript
 from macgent.reasoning.llm_client import build_vision_fallback_client
@@ -46,6 +47,8 @@ def set_dispatch_config(config):
     _dispatch_config["kilo_browser_vision_model"] = getattr(config, "kilo_browser_vision_model", "")
     _dispatch_config["kilo_api_key"] = getattr(config, "kilo_api_key", "")
     _dispatch_config["kilo_api_base"] = getattr(config, "kilo_api_base", "")
+    _dispatch_config["brave_search_api_key"] = getattr(config, "brave_search_api_key", "")
+    _dispatch_config["brave_search_api_base"] = getattr(config, "brave_search_api_base", "https://api.search.brave.com")
 
 
 def _get_workspace_dir() -> Path:
@@ -237,6 +240,21 @@ def dispatch(action: Action) -> str:
             return mail_actions.reply_email(
                 message_number=int(p["number"]),
                 body=p["body"],
+            )
+
+        elif t == "brave_search":
+            query = p.get("query", "").strip()
+            if not query:
+                return "ERROR: brave_search needs 'query'"
+            return brave_web_search_json(
+                api_key=_dispatch_config.get("brave_search_api_key", ""),
+                api_base=_dispatch_config.get("brave_search_api_base", "https://api.search.brave.com"),
+                query=query,
+                count=int(p.get("count", 5)),
+                country=p.get("country"),
+                search_lang=p.get("search_lang"),
+                safesearch=p.get("safesearch", "moderate"),
+                freshness=p.get("freshness"),
             )
 
         elif t == "evaluate_image":

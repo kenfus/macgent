@@ -71,7 +71,7 @@ class ManagerRole(BaseRole):
         was_bootstrapped = self._is_bootstrapped()
 
         # 1. Build full context (Python does this automatically)
-        #    soul.md + IDENTITY.md + all skills + MEMORY.md + daily logs + FAISS recall
+        #    soul.md + skills + core_memory.md + recent logs + top semantic memory chunks
         system = self.get_system_prompt()
 
         # 2. Gather structured input

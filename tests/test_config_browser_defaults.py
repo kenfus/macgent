@@ -8,3 +8,4 @@ def test_browser_defaults_present():
     assert cfg.captcha_auto_attempts >= 0
     assert cfg.browser_reasoning_model
     assert cfg.browser_vision_model
+    assert cfg.brave_search_api_base

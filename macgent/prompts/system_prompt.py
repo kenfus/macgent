@@ -100,6 +100,11 @@ evaluate_image: Send an image to the configured vision model chain (useful when 
   {"reasoning": "...", "action": {"type": "evaluate_image", "params": {"path": "workspace/screenshots/page.png", "prompt": "Describe UI elements and blockers"}}}
   {"reasoning": "...", "action": {"type": "evaluate_image", "params": {"image_base64": "...", "media_type": "image/png", "prompt": "Extract key text"}}}
 
+### Search Utility
+brave_search: Fast web search via Brave API (use this before browser navigation for research tasks)
+  {"reasoning": "...", "action": {"type": "brave_search", "params": {"query": "best hotels in Basel", "count": 5}}}
+  {"reasoning": "...", "action": {"type": "brave_search", "params": {"query": "latest macOS accessibility APIs", "country": "us", "search_lang": "en"}}}
+
 ### Control
 wait: Wait for page to load
   {"reasoning": "...", "action": {"type": "wait", "params": {"seconds": 2}}}
@@ -164,6 +169,8 @@ ALWAYS prefer using index numbers. They are the most reliable way to interact wi
     - Do NOT rely only on execute_js with CSS selectors; the DOM structure changes often
     - Compile the list from what you can read in PAGE TEXT and call done with the summary
     - Only use execute_js as a last resort when the page text is clearly incomplete
+14. WEB RESEARCH FIRST: For general information lookup tasks, call brave_search first.
+    Use browser actions only when direct page interaction is required.
 
 ## Response Format
 
@@ -174,6 +181,7 @@ ALWAYS prefer using index numbers. They are the most reliable way to interact wi
 _MAIL_KEYWORDS = ("email", "mail", "inbox", "send email", "read email")
 _CALENDAR_KEYWORDS = ("calendar", "add event", "schedule", "meeting")
 _IMESSAGE_KEYWORDS = ("imessage", "iMessage", "text message", "send message", "sms")
+_SEARCH_KEYWORDS = ("search", "look up", "find information", "research", "latest")
 
 
 def build_user_message(task: str, observation, history: list) -> str:
@@ -199,6 +207,10 @@ def build_user_message(task: str, observation, history: list) -> str:
         parts.append(
             "REMINDER: Use imessage_read / imessage_send actions directly. "
             "Do NOT open Messages app or navigate anywhere."
+        )
+    if any(kw in task_lower for kw in _SEARCH_KEYWORDS):
+        parts.append(
+            "REMINDER: Prefer brave_search for information lookup before opening browser pages."
         )
 
     if history:

@@ -22,6 +22,17 @@ macgent has two skill classes with different lifecycle rules:
 
 Load precedence is always: **core -> learned**.
 
+## Memory Context Contract
+
+Memory is file-based (no database-backed memory retrieval). On every context build, the agent gets:
+
+1. `workspace/<role>/soul.md`
+2. Core + learned skills
+3. `workspace/core_memory.md`
+4. `workspace/<role>/MEMORY.md` (if present)
+5. Recent daily memory logs (`workspace/memory/daily/`, today + yesterday by default)
+6. Top-N relevant chunks from `workspace/memory/semantic_memories.jsonl` for the current task
+
 ## Skill Authoring Contract
 
 Each skill markdown should include these sections in order:
@@ -49,6 +60,7 @@ Each skill markdown should include these sections in order:
 | `macos.md` | Core | `mail_*`, `calendar_*`, `imessage_*`, `open_app` | `macgent/actions/mail_actions.py`, `calendar_actions.py`, `imessage_actions.py` |
 | `email_operations.md` | Core | `mail_read`, `mail_read_full`, `mail_send`, `mail_reply` | `macgent/actions/mail_actions.py` |
 | `files.md` | Core | `read_file`, `write_file`, `edit_file`, `delete_file` | `macgent/actions/dispatcher.py` |
+| `brave_search.md` | Core | `brave_search` | `macgent/actions/brave_search.py`, `macgent/actions/dispatcher.py` |
 | `workspace/skills/notion.md` | Learned | `notion_*` usage reference only | Runtime implemented in `macgent/actions/notion_actions.py` |
 | `evaluate_image.md` | Core | `evaluate_image` | `macgent/actions/dispatcher.py` + vision fallback chain |
 

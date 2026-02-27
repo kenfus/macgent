@@ -99,6 +99,7 @@ Available capabilities agents can use:
 - **[AppleScript](./macgent/skills/applescript.md)** — Control macOS applications
 - **[JavaScript](./macgent/skills/javascript.md)** — Extract data from web pages
 - **[Evaluate Image](./macgent/skills/evaluate_image.md)** — Vision fallback for non-multimodal text models
+- **[Brave Search](./macgent/skills/brave_search.md)** — Fast API-based web search without browser navigation
 
 See [skills/README.md](./skills/README.md) for detailed documentation.
 
@@ -112,17 +113,16 @@ Each agent has a **soul** — a character definition that guides behavior. Souls
 - How they approach problems
 - Rules and constraints
 
-See [docs/SOUL.md](./docs/SOUL.md) to understand and customize souls.
+Primary soul files:
+- `workspace/manager/soul.md`
+- `workspace/worker/soul.md`
 
 ### Memory
 
-Three-layer memory system:
-
-1. **Soul** (permanent character) — Guides all decisions
-2. **Short-term** (task interactions) — Recent conversation context
-3. **Long-term** (semantic learning) — Lessons from past tasks
-
-See [docs/MEMORY.md](./docs/MEMORY.md) for deep dive.
+Memory is file-based and always injected into prompts:
+- `workspace/core_memory.md` (global memory contract)
+- `workspace/memory/daily/memory-YYYY-MM-DD.md` (recent logs, today+yesterday by default)
+- `workspace/memory/semantic_memories.jsonl` (semantic lessons, top-N recalled per task)
 
 ## Usage Modes
 
@@ -200,17 +200,14 @@ uv run macgent soul edit manager   # How Manager monitors email
 uv run macgent soul edit stakeholder  # How Stakeholder reviews
 ```
 
-See [docs/SOUL.md](./docs/SOUL.md) for examples.
+These files are the source of truth:
+- `workspace/manager/soul.md`
+- `workspace/worker/soul.md`
 
 ## Examples
 
 Ready-to-run examples demonstrating different capabilities:
 
-### Web Search
-```bash
-bash examples/web_search_test.sh
-```
-Agent searches DuckDuckGo, extracts results.
 
 ### Hotel Booking
 ```bash
@@ -298,12 +295,13 @@ macgent/
 ├── reasoning/        # LLM integration and decision-making
 ├── roles/            # Manager, Worker, Stakeholder agent implementations
 ├── prompts/          # System prompts and context builders
-├── memory/           # Memory system (souls, short-term, long-term)
-├── db.py             # Database (tasks, memory, logs)
+├── memory.py         # File-based memory context + semantic recall
+├── db.py             # Database (messages, monitor state, logs)
 └── agent.py          # Single-agent orchestrator
 
 skills/              # Documentation of available skills
-docs/                # Guides (SOUL.md, MEMORY.md)
+docs/                # Project architecture and setup docs
+workspace/           # Runtime soul + memory files copied from macgent/workspace templates
 examples/            # Example scripts to run
 ```
 
@@ -324,10 +322,10 @@ Add your LLM API key to `.env` and ensure it's loaded.
 - Close popups manually if agent gets stuck
 - Check that interactive elements are visible on screen
 
-### Long-term memory disabled
-Install optional dependencies:
+### Semantic recall disabled
+Install optional dependency:
 ```bash
-uv pip install fastembed faiss-cpu
+uv pip install fastembed
 ```
 
 ### Telegram notifications not working
@@ -414,7 +412,6 @@ Contributions welcome! Please:
 
 ## See Also
 
-- [docs/SOUL.md](./docs/SOUL.md) — Understanding and customizing agent character
-- [docs/MEMORY.md](./docs/MEMORY.md) — How agents learn and remember
+- [macgent/workspace/core_memory.md](./macgent/workspace/core_memory.md) — Core memory contract template
 - [skills/README.md](./skills/README.md) — Complete skill reference
 - [TELEGRAM_BOT.md](./TELEGRAM_BOT.md) — Using the Telegram integration

@@ -52,6 +52,10 @@ class Config:
     kilo_api_key: str = ""
     kilo_browser_vision_model: str = ""
 
+    # External search providers
+    brave_search_api_base: str = "https://api.search.brave.com"
+    brave_search_api_key: str = ""
+
     # Tools
     cliclick_path: str = "/opt/homebrew/bin/cliclick"
 
@@ -77,6 +81,10 @@ class Config:
     log_file: str = ""
     faiss_path: str = ""
     memories_dir: str = ""
+
+    # Memory context policy
+    memory_recent_days: int = 2
+    memory_top_k: int = 5
 
     @classmethod
     def _load_model_config(cls, path: str) -> dict[str, Any]:
@@ -146,6 +154,8 @@ class Config:
             kilo_api_base=os.getenv("KILO_API_BASE", cls.kilo_api_base),
             kilo_api_key=os.getenv("KILO_API_KEY", ""),
             kilo_browser_vision_model=os.getenv("KILO_BROWSER_VISION_MODEL", ""),
+            brave_search_api_base=os.getenv("BRAVE_SEARCH_API_BASE", cls.brave_search_api_base),
+            brave_search_api_key=os.getenv("BRAVE_SEARCH_API_KEY", ""),
             manager_models=os.getenv("MANAGER_MODELS", cls.manager_models),
             worker_models=os.getenv("WORKER_MODELS", cls.worker_models),
             daemon_interval=int(os.getenv("DAEMON_INTERVAL", str(cls.daemon_interval))),
@@ -159,6 +169,8 @@ class Config:
             log_file=os.getenv("MACGENT_LOG_FILE", default_log),
             faiss_path=os.getenv("MACGENT_FAISS_PATH", str(macgent_dir / "memory.faiss")),
             memories_dir=os.getenv("MACGENT_MEMORIES_DIR", str(macgent_dir / "memories")),
+            memory_recent_days=int(os.getenv("MEMORY_RECENT_DAYS", str(cls.memory_recent_days))),
+            memory_top_k=int(os.getenv("MEMORY_TOP_K", str(cls.memory_top_k))),
         )
 
     def get_model_chain(self, role: str) -> list[str]:
