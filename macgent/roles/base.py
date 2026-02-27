@@ -1,9 +1,9 @@
-"""Base role class with LLM fallback chain support."""
+"""Base role class with unified LLM fallback routing."""
 
 import json
 import re
 import logging
-import httpx
+from macgent.reasoning.llm_client import build_text_fallback_client
 
 logger = logging.getLogger("macgent.roles")
 
@@ -17,66 +17,26 @@ class BaseRole:
         self.config = config
         self.db = db
         self.memory = memory
-        self.model_chain = config.get_model_chain(self.role_name)
-        self._http = httpx.Client(timeout=180.0)
+        self._llm = build_text_fallback_client(config)
 
     def call_llm(self, messages: list[dict], system: str = "",
                  max_tokens: int = 2048, temperature: float = 0.0) -> str:
-        """Call LLM with automatic fallback on 429/500/timeout."""
+        """Call LLM through unified primary/fallback offer chain."""
         # Log the outgoing prompt at DEBUG level (visible in log file)
         last_msg = messages[-1]["content"] if messages else ""
         logger.debug(
-            f"[{self.role_name}] LLM call | model_chain={self.model_chain[0]}... | "
+            f"[{self.role_name}] LLM call | chain={self.config.get_text_offer_chain()} | "
             f"msgs={len(messages)} | last_msg={last_msg[:200]}"
         )
 
-        last_error = None
-        for model in self.model_chain:
-            try:
-                result = self._call_openai(model, messages, system, max_tokens, temperature)
-                logger.debug(f"[{self.role_name}] LLM response ({model}): {result[:300]}")
-                return result
-            except (httpx.HTTPStatusError, httpx.TimeoutException) as e:
-                last_error = e
-                status = getattr(e.response, "status_code", None) if hasattr(e, "response") else None
-                logger.warning(f"[{self.role_name}] Model {model} failed (status={status}): {e}")
-                continue
-            except Exception as e:
-                last_error = e
-                logger.error(f"[{self.role_name}] Model {model} unexpected error: {e}")
-                continue
-
-        raise RuntimeError(f"All models failed for {self.role_name}. Last error: {last_error}")
-
-    def _call_openai(self, model: str, messages: list[dict], system: str,
-                     max_tokens: int, temperature: float) -> str:
-        """Call OpenRouter/OpenAI-compatible API."""
-        api_base = self.config.reasoning_api_base.rstrip("/")
-        url = f"{api_base}/chat/completions"
-
-        all_messages = []
-        if system:
-            all_messages.append({"role": "system", "content": system})
-        all_messages.extend(messages)
-
-        payload = {
-            "model": model,
-            "messages": all_messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-        }
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.config.reasoning_api_key}",
-        }
-
-        logger.debug(f"[{self.role_name}] POST {url} model={model}")
-        resp = self._http.post(url, json=payload, headers=headers)
-        resp.raise_for_status()
-        data = resp.json()
-        content = data["choices"][0]["message"]["content"]
+        content = self._llm.chat(
+            messages=messages,
+            system=system,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
         if not content or not content.strip():
-            raise RuntimeError(f"Model {model} returned empty response")
+            raise RuntimeError("LLM returned empty response")
         return content
 
     def parse_json(self, text: str) -> dict | None:

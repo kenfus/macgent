@@ -1,6 +1,8 @@
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 # Default data directory
 MACGENT_DIR = Path.home() / ".macgent"
@@ -17,8 +19,18 @@ class Config:
     # Vision model (optional)
     vision_api_base: str = "https://openrouter.ai/api/v1"
     vision_api_key: str = ""
-    vision_model: str = "google/gemini-2.5-pro-exp-03-25:free"
+    vision_model: str = "nvidia/nemotron-nano-12b-v2-vl:free"
     vision_api_type: str = "openai"
+
+    # Unified model routing aliases (can be overridden by macgent_config.json)
+    text_model_primary: str = "openrouter_primary"
+    text_model_fallbacks: str = "openrouter_trinity,kilo_glm5"
+    vision_model_primary: str = "openrouter_vision_primary"
+    vision_model_fallbacks: str = "openrouter_nemotron_vl"
+
+    # Structured model config file
+    model_config_path: str = ""
+    model_config: dict[str, Any] = field(default_factory=dict)
 
     # Agent settings
     max_steps: int = 30
@@ -27,15 +39,28 @@ class Config:
     page_text_max_chars: int = 4000
     use_vision: bool = False
 
+    # Browser backend strategy
+    browser_mode: str = "agent_browser"
+    browser_fallback_threshold: int = 3
+    captcha_auto_attempts: int = 1
+    browser_reasoning_model: str = "arcee-ai/trinity-large-preview:free"
+    browser_vision_model: str = "nvidia/nemotron-nano-12b-v2-vl:free"
+    browser_headed: bool = False
+
+    # Optional last-resort provider
+    kilo_api_base: str = "https://api.kilo.ai/v1"
+    kilo_api_key: str = ""
+    kilo_browser_vision_model: str = ""
+
     # Tools
     cliclick_path: str = "/opt/homebrew/bin/cliclick"
 
-    # Per-role models (with fallback chains, comma-separated)
+    # Per-role legacy model chains
     manager_models: str = "google/gemma-3-27b-it:free,mistralai/mistral-small-3.1-24b-instruct:free,nvidia/nemotron-3-nano-30b-a3b:free"
     worker_models: str = "arcee-ai/trinity-large-preview:free,qwen/qwen3-coder:free,google/gemma-3-27b-it:free"
 
     # Daemon settings
-    daemon_interval: int = 1800  # 30 minutes in seconds
+    daemon_interval: int = 1800
     stale_task_minutes: int = 60
 
     # Telegram Bot
@@ -48,19 +73,40 @@ class Config:
 
     # Paths
     db_path: str = ""
-    workspace_dir: str = ""    # agent runtime: role files + learned skills
-    log_file: str = ""         # path to macgent.log
+    workspace_dir: str = ""
+    log_file: str = ""
     faiss_path: str = ""
-    memories_dir: str = ""     # daily memory .md files
+    memories_dir: str = ""
+
+    @classmethod
+    def _load_model_config(cls, path: str) -> dict[str, Any]:
+        p = Path(path)
+        if not p.exists():
+            return {}
+        try:
+            return json.loads(p.read_text())
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _split_csv(values: str) -> list[str]:
+        return [v.strip() for v in (values or "").split(",") if v.strip()]
+
+    @staticmethod
+    def _route_value(cfg: dict[str, Any], section: str, key: str, default: Any) -> Any:
+        return cfg.get("routes", {}).get(section, {}).get(key, default)
 
     @classmethod
     def from_env(cls) -> "Config":
         macgent_dir = Path(os.getenv("MACGENT_DIR", str(MACGENT_DIR)))
-        # Default workspace: always repo's workspace/ dir (created on first run by _setup_workspace)
-        # Override with MACGENT_WORKSPACE_DIR if running macgent installed outside the repo.
-        _repo_workspace = Path(__file__).parent.parent / "workspace"
-        default_workspace = str(_repo_workspace)
-        default_log = str(_repo_workspace / "macgent.log")
+        repo_workspace = Path(__file__).parent.parent / "workspace"
+        default_workspace = str(repo_workspace)
+        default_log = str(repo_workspace / "macgent.log")
+
+        default_cfg_path = str(Path.cwd() / "macgent_config.json")
+        cfg_path = os.getenv("MACGENT_CONFIG_PATH", default_cfg_path)
+        model_cfg = cls._load_model_config(cfg_path)
+
         return cls(
             reasoning_api_base=os.getenv("REASONING_API_BASE", cls.reasoning_api_base),
             reasoning_api_key=os.getenv("REASONING_API_KEY", ""),
@@ -70,9 +116,36 @@ class Config:
             vision_api_key=os.getenv("VISION_API_KEY", ""),
             vision_model=os.getenv("VISION_MODEL", cls.vision_model),
             vision_api_type=os.getenv("VISION_API_TYPE", cls.vision_api_type),
+            text_model_primary=os.getenv(
+                "TEXT_MODEL_PRIMARY",
+                cls._route_value(model_cfg, "text", "primary", cls.text_model_primary),
+            ),
+            text_model_fallbacks=os.getenv(
+                "TEXT_MODEL_FALLBACKS",
+                ",".join(cls._route_value(model_cfg, "text", "fallbacks", cls._split_csv(cls.text_model_fallbacks))),
+            ),
+            vision_model_primary=os.getenv(
+                "VISION_MODEL_PRIMARY",
+                cls._route_value(model_cfg, "vision", "primary", cls.vision_model_primary),
+            ),
+            vision_model_fallbacks=os.getenv(
+                "VISION_MODEL_FALLBACKS",
+                ",".join(cls._route_value(model_cfg, "vision", "fallbacks", cls._split_csv(cls.vision_model_fallbacks))),
+            ),
+            model_config_path=cfg_path,
+            model_config=model_cfg,
             max_steps=int(os.getenv("MAX_STEPS", str(cls.max_steps))),
             step_delay=float(os.getenv("STEP_DELAY", str(cls.step_delay))),
             use_vision=os.getenv("USE_VISION", "false").lower() == "true",
+            browser_mode=os.getenv("BROWSER_MODE", "agent_browser"),
+            browser_fallback_threshold=int(os.getenv("BROWSER_FALLBACK_THRESHOLD", "3")),
+            captcha_auto_attempts=int(os.getenv("CAPTCHA_AUTO_ATTEMPTS", "1")),
+            browser_reasoning_model=os.getenv("BROWSER_REASONING_MODEL", cls.browser_reasoning_model),
+            browser_vision_model=os.getenv("BROWSER_VISION_MODEL", cls.browser_vision_model),
+            browser_headed=os.getenv("BROWSER_HEADED", "false").lower() == "true",
+            kilo_api_base=os.getenv("KILO_API_BASE", cls.kilo_api_base),
+            kilo_api_key=os.getenv("KILO_API_KEY", ""),
+            kilo_browser_vision_model=os.getenv("KILO_BROWSER_VISION_MODEL", ""),
             manager_models=os.getenv("MANAGER_MODELS", cls.manager_models),
             worker_models=os.getenv("WORKER_MODELS", cls.worker_models),
             daemon_interval=int(os.getenv("DAEMON_INTERVAL", str(cls.daemon_interval))),
@@ -89,9 +162,49 @@ class Config:
         )
 
     def get_model_chain(self, role: str) -> list[str]:
-        """Get the fallback model chain for a role."""
         chains = {
             "manager": self.manager_models,
             "worker": self.worker_models,
         }
-        return [m.strip() for m in chains.get(role, self.worker_models).split(",")]
+        return [m.strip() for m in chains.get(role, self.worker_models).split(",") if m.strip()]
+
+    def get_text_offer_chain(self) -> list[str]:
+        route = self.model_config.get("routes", {}).get("text", {})
+        primary = route.get("primary", self.text_model_primary)
+        fallbacks = route.get("fallbacks", self._split_csv(self.text_model_fallbacks))
+        return [primary, *fallbacks]
+
+    def get_vision_offer_chain(self) -> list[str]:
+        route = self.model_config.get("routes", {}).get("vision", {})
+        primary = route.get("primary", self.vision_model_primary)
+        fallbacks = route.get("fallbacks", self._split_csv(self.vision_model_fallbacks))
+        return [primary, *fallbacks]
+
+    def get_browser_text_offer_chain(self) -> list[str]:
+        route = self.model_config.get("routes", {}).get("browser", {}).get("text", {})
+        primary = route.get("primary", self.browser_reasoning_model or self.text_model_primary)
+        fallbacks = route.get("fallbacks", self._split_csv(self.text_model_fallbacks))
+        return [primary, *fallbacks]
+
+    def get_browser_vision_offer_chain(self) -> list[str]:
+        route = self.model_config.get("routes", {}).get("browser", {}).get("vision", {})
+        primary = route.get("primary", self.browser_vision_model or self.vision_model_primary)
+        fallbacks = route.get("fallbacks", self._split_csv(self.vision_model_fallbacks))
+        if self.kilo_browser_vision_model:
+            fallbacks = [*fallbacks, self.kilo_browser_vision_model]
+        return [primary, *fallbacks]
+
+    def get_error_policy(self) -> dict[str, Any]:
+        policy = self.model_config.get("error_policy", {})
+        return {
+            "retry_statuses": policy.get("retry_statuses", [429, 503, 504]),
+            "max_retries_per_offer": int(policy.get("max_retries_per_offer", 2)),
+            "backoff_seconds": float(policy.get("backoff_seconds", 1.5)),
+            "backoff_multiplier": float(policy.get("backoff_multiplier", 2.0)),
+        }
+
+    def get_provider_definition(self, provider: str) -> dict[str, Any] | None:
+        return self.model_config.get("providers", {}).get(provider)
+
+    def get_offer_definition(self, alias: str, modality: str) -> dict[str, Any] | None:
+        return self.model_config.get("offers", {}).get(modality, {}).get(alias)

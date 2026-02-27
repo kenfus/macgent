@@ -1,5 +1,5 @@
 import logging
-from macgent.perception.safari import run_osascript
+from macgent.utils_osascript import run_osascript
 
 logger = logging.getLogger("macgent.actions.imessage")
 

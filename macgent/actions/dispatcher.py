@@ -1,10 +1,13 @@
 import time
 import json
 import logging
+import base64
 from pathlib import Path
 from macgent.models import Action
 from macgent.actions import safari_actions, mouse, calendar_actions
-from macgent.perception.safari import run_osascript, execute_js_in_safari
+from macgent.perception.safari import execute_js_in_safari
+from macgent.utils_osascript import run_osascript
+from macgent.reasoning.llm_client import build_vision_fallback_client
 
 logger = logging.getLogger("macgent.dispatcher")
 
@@ -23,6 +26,26 @@ def set_dispatch_config(config):
     _dispatch_config["reasoning_model"] = getattr(config, "reasoning_model", "")
     _dispatch_config["reasoning_api_key"] = getattr(config, "reasoning_api_key", "")
     _dispatch_config["reasoning_api_base"] = getattr(config, "reasoning_api_base", "")
+    _dispatch_config["reasoning_api_type"] = getattr(config, "reasoning_api_type", "openai")
+    _dispatch_config["vision_api_key"] = getattr(config, "vision_api_key", "")
+    _dispatch_config["vision_api_base"] = getattr(config, "vision_api_base", "")
+    _dispatch_config["vision_api_type"] = getattr(config, "vision_api_type", "openai")
+    _dispatch_config["browser_mode"] = getattr(config, "browser_mode", "agent_browser")
+    _dispatch_config["browser_fallback_threshold"] = getattr(config, "browser_fallback_threshold", 3)
+    _dispatch_config["captcha_auto_attempts"] = getattr(config, "captcha_auto_attempts", 1)
+    _dispatch_config["browser_reasoning_model"] = getattr(config, "browser_reasoning_model", "")
+    _dispatch_config["browser_vision_model"] = getattr(config, "browser_vision_model", "")
+    _dispatch_config["browser_headed"] = getattr(config, "browser_headed", False)
+    _dispatch_config["text_model_primary"] = getattr(config, "text_model_primary", "openrouter_primary")
+    _dispatch_config["text_model_fallbacks"] = getattr(config, "text_model_fallbacks", "openrouter_trinity,kilo_glm5")
+    _dispatch_config["vision_model_primary"] = getattr(config, "vision_model_primary", "openrouter_vision_primary")
+    _dispatch_config["vision_model_fallbacks"] = getattr(config, "vision_model_fallbacks", "openrouter_nemotron_vl")
+    _dispatch_config["vision_model"] = getattr(config, "vision_model", "")
+    _dispatch_config["model_config"] = getattr(config, "model_config", {})
+    _dispatch_config["error_policy"] = getattr(config, "get_error_policy", lambda: {})()
+    _dispatch_config["kilo_browser_vision_model"] = getattr(config, "kilo_browser_vision_model", "")
+    _dispatch_config["kilo_api_key"] = getattr(config, "kilo_api_key", "")
+    _dispatch_config["kilo_api_base"] = getattr(config, "kilo_api_base", "")
 
 
 def _get_workspace_dir() -> Path:
@@ -31,6 +54,49 @@ def _get_workspace_dir() -> Path:
     if wd:
         return Path(wd)
     return Path(__file__).parent.parent.parent / "workspace"
+
+
+def _read_image_as_base64(path_or_rel: str) -> str:
+    path = Path(path_or_rel)
+    if not path.is_absolute():
+        path = (_get_workspace_dir() / path_or_rel).resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"Image not found: {path_or_rel}")
+    return base64.b64encode(path.read_bytes()).decode("ascii")
+
+
+def _build_dispatch_vision_client():
+    class _VisionCfg:
+        reasoning_api_base = _dispatch_config.get("reasoning_api_base", "https://openrouter.ai/api/v1")
+        reasoning_api_key = _dispatch_config.get("reasoning_api_key", "")
+        reasoning_api_type = _dispatch_config.get("reasoning_api_type", "openai")
+        reasoning_model = _dispatch_config.get("reasoning_model", "")
+        vision_api_base = _dispatch_config.get("vision_api_base", "https://openrouter.ai/api/v1")
+        vision_api_key = _dispatch_config.get("vision_api_key", "")
+        vision_api_type = _dispatch_config.get("vision_api_type", "openai")
+        vision_model = _dispatch_config.get("vision_model", "")
+        kilo_api_base = _dispatch_config.get("kilo_api_base", "https://api.kilo.ai/v1")
+        kilo_api_key = _dispatch_config.get("kilo_api_key", "")
+
+        @staticmethod
+        def get_vision_offer_chain():
+            primary = _dispatch_config.get("vision_model_primary", "openrouter_vision_primary")
+            fallbacks = [x.strip() for x in _dispatch_config.get("vision_model_fallbacks", "").split(",") if x.strip()]
+            return [primary, *fallbacks]
+
+        @staticmethod
+        def get_error_policy():
+            return _dispatch_config.get("error_policy", {})
+
+        @staticmethod
+        def get_offer_definition(alias: str, modality: str):
+            return _dispatch_config.get("model_config", {}).get("offers", {}).get(modality, {}).get(alias)
+
+        @staticmethod
+        def get_provider_definition(provider: str):
+            return _dispatch_config.get("model_config", {}).get("providers", {}).get(provider)
+
+    return build_vision_fallback_client(_VisionCfg())
 
 
 def dispatch(action: Action) -> str:
@@ -173,6 +239,25 @@ def dispatch(action: Action) -> str:
                 body=p["body"],
             )
 
+        elif t == "evaluate_image":
+            # Use vision chain even when reasoning model itself is text-only.
+            image_b64 = p.get("image_base64", "")
+            image_path = p.get("path", "")
+            prompt = p.get("prompt", "Describe this image and list key actionable details.")
+            media_type = p.get("media_type", "image/png")
+            if not image_b64:
+                if not image_path:
+                    return "ERROR: evaluate_image needs 'path' or 'image_base64'"
+                image_b64 = _read_image_as_base64(image_path)
+            client = _build_dispatch_vision_client()
+            result = client.chat_with_image(
+                prompt=prompt,
+                image_base64=image_b64,
+                image_media_type=media_type,
+                max_tokens=int(p.get("max_tokens", 800)),
+            )
+            return result
+
         elif t == "read_file":
             # Read a file in the workspace. Optional offset/limit for line ranges.
             rel = p.get("path", "")
@@ -301,8 +386,61 @@ def dispatch(action: Action) -> str:
                     reasoning_model = _dispatch_config.get("reasoning_model", "")
                     reasoning_api_key = _dispatch_config.get("reasoning_api_key", "")
                     reasoning_api_base = _dispatch_config.get("reasoning_api_base", "")
+                    reasoning_api_type = _dispatch_config.get("reasoning_api_type", "openai")
+                    vision_api_key = _dispatch_config.get("vision_api_key", "")
+                    vision_api_base = _dispatch_config.get("vision_api_base", "")
+                    vision_api_type = _dispatch_config.get("vision_api_type", "openai")
+                    workspace_dir = str(_get_workspace_dir())
+                    browser_mode = _dispatch_config.get("browser_mode", "agent_browser")
+                    browser_fallback_threshold = int(_dispatch_config.get("browser_fallback_threshold", 3))
+                    captcha_auto_attempts = int(_dispatch_config.get("captcha_auto_attempts", 1))
+                    browser_reasoning_model = _dispatch_config.get("browser_reasoning_model", _dispatch_config.get("reasoning_model", ""))
+                    browser_vision_model = _dispatch_config.get("browser_vision_model", _dispatch_config.get("vision_model", ""))
+                    browser_headed = bool(_dispatch_config.get("browser_headed", False))
+                    text_model_primary = _dispatch_config.get("text_model_primary", "openrouter_primary")
+                    text_model_fallbacks = _dispatch_config.get("text_model_fallbacks", "openrouter_trinity,kilo_glm5")
+                    vision_model_primary = _dispatch_config.get("vision_model_primary", "openrouter_vision_primary")
+                    vision_model_fallbacks = _dispatch_config.get("vision_model_fallbacks", "openrouter_nemotron_vl")
+                    vision_model = _dispatch_config.get("browser_vision_model", _dispatch_config.get("vision_model", ""))
+                    model_config = _dispatch_config.get("model_config", {})
+                    kilo_api_base = _dispatch_config.get("kilo_api_base", "")
+                    kilo_api_key = _dispatch_config.get("kilo_api_key", "")
+                    kilo_browser_vision_model = _dispatch_config.get("kilo_browser_vision_model", "")
 
-                return run_browser_task(_Cfg(), task_desc)
+                    @staticmethod
+                    def get_error_policy():
+                        return _dispatch_config.get("error_policy", {})
+
+                    @staticmethod
+                    def get_offer_definition(alias: str, modality: str):
+                        return _dispatch_config.get("model_config", {}).get("offers", {}).get(modality, {}).get(alias)
+
+                    @staticmethod
+                    def get_provider_definition(provider: str):
+                        return _dispatch_config.get("model_config", {}).get("providers", {}).get(provider)
+
+                    @staticmethod
+                    def get_browser_text_offer_chain():
+                        primary = _dispatch_config.get("browser_reasoning_model") or _dispatch_config.get("text_model_primary", "openrouter_primary")
+                        fallbacks = [x.strip() for x in _dispatch_config.get("text_model_fallbacks", "").split(",") if x.strip()]
+                        return [primary, *fallbacks]
+
+                    @staticmethod
+                    def get_browser_vision_offer_chain():
+                        primary = _dispatch_config.get("browser_vision_model") or _dispatch_config.get("vision_model_primary", "openrouter_vision_primary")
+                        fallbacks = [x.strip() for x in _dispatch_config.get("vision_model_fallbacks", "").split(",") if x.strip()]
+                        kilo_model = _dispatch_config.get("kilo_browser_vision_model", "")
+                        if kilo_model:
+                            fallbacks.append(kilo_model)
+                        return [primary, *fallbacks]
+
+                return run_browser_task(
+                    _Cfg(),
+                    task_desc,
+                    mode=p.get("mode"),
+                    max_steps=p.get("max_steps"),
+                    capture_artifacts=bool(p.get("capture_artifacts", True)),
+                )
             except Exception as e:
                 return f"ERROR: browser_task: {e}"
 

@@ -1,28 +1,25 @@
+import json
 import time
 import logging
+
 from macgent.config import Config
 from macgent.models import AgentState, Step, Observation, Action
-from macgent.perception.safari import (
-    get_safari_url, get_safari_title, get_page_text,
-    get_page_interactive_elements, get_page_structure,
-    wait_for_page_load,
-)
-from macgent.perception.screenshot import (
-    take_safari_window_screenshot, resize_screenshot, screenshot_to_base64,
-)
-from macgent.reasoning.llm_client import LLMClient
-from macgent.reasoning.vision import describe_screenshot
+from macgent.reasoning.llm_client import build_text_fallback_client
 from macgent.reasoning.reasoner import get_next_action
 from macgent.actions.dispatcher import dispatch
 
 logger = logging.getLogger("macgent")
 
-SPA_DOMAINS = ["notion.so", "notion.com", "booking.com", "app.notion.so", "docs.google.com"]
-# Per-domain wait times after click/nav (seconds). Longer for complex JS rendering.
-SPA_WAIT = {"booking.com": 2.5, "docs.google.com": 1.0}
-
-# Actions that trigger page loads
-NAVIGATION_ACTIONS = {"navigate", "go_back", "go_forward", "click", "click_element", "new_tab", "switch_tab"}
+MACOS_DIRECT_KEYWORDS = (
+    "email",
+    "mail",
+    "inbox",
+    "calendar",
+    "meeting",
+    "imessage",
+    "message",
+    "sms",
+)
 
 
 class Agent:
@@ -31,16 +28,7 @@ class Agent:
         self.config = config
         self.db = db
         self.task_id = task_id
-        self.reasoning_client = LLMClient(
-            config.reasoning_api_base, config.reasoning_api_key,
-            config.reasoning_model, config.reasoning_api_type,
-        )
-        self.vision_client = None
-        if config.use_vision and config.vision_api_key:
-            self.vision_client = LLMClient(
-                config.vision_api_base, config.vision_api_key,
-                config.vision_model, config.vision_api_type,
-            )
+        self.reasoning_client = build_text_fallback_client(config)
 
         # Build full worker soul: soul + skills + memory + semantic recall
         if memory and db:
@@ -54,6 +42,7 @@ class Agent:
     def _load_soul(self, role: str) -> str:
         """Load soul file from workspace/{role}/soul.md."""
         from pathlib import Path
+
         workspace = Path(self.config.workspace_dir)
         path = workspace / role / "soul.md"
         if path.exists():
@@ -65,95 +54,81 @@ class Agent:
     def run(self, task: str) -> AgentState:
         state = AgentState(task=task, max_steps=self.config.max_steps)
 
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"Task: {task}")
         print(f"Model: {self.config.reasoning_model}")
-        if self.vision_client:
-            print(f"Vision: {self.config.vision_model}")
-        print(f"{'='*60}\n")
+        print(f"Browser mode: {self.config.browser_mode}")
+        print(f"{'=' * 60}\n")
 
+        # macOS tasks use direct action loop (no Safari perception).
+        if self._is_macos_direct_task(task):
+            return self._run_macos_direct_loop(state, task)
+
+        # All web tasks delegate to agent-browser adapter.
+        return self._run_browser_task_delegate(state, task, reason="primary_mode")
+
+    def _is_macos_direct_task(self, task: str) -> bool:
+        task_l = task.lower()
+        return any(keyword in task_l for keyword in MACOS_DIRECT_KEYWORDS)
+
+    def _run_macos_direct_loop(self, state: AgentState, task: str) -> AgentState:
+        """Run a direct-action LLM loop for macOS native actions (Mail/Calendar/iMessage)."""
         last_action_key = None
         stuck_count = 0
 
         for step_num in range(1, state.max_steps + 1):
             print(f"\n--- Step {step_num}/{state.max_steps} ---")
 
-            # Wait for page load after navigation actions
-            if state.steps and state.steps[-1].action.type in NAVIGATION_ACTIONS:
-                wait_for_page_load(timeout=5)
-                # SPAs need extra time for React re-renders (date pickers, modals)
-                try:
-                    _url = get_safari_url()
-                    _spa_wait = next((w for d, w in SPA_WAIT.items() if d in _url), None)
-                    if _spa_wait is None and any(d in _url for d in SPA_DOMAINS):
-                        _spa_wait = 1.5
-                except Exception:
-                    _spa_wait = None
-                time.sleep(_spa_wait if _spa_wait else 0.5)
+            observation = Observation(
+                url="macos://local",
+                page_title="macOS direct actions",
+                page_text=(
+                    "Use direct native actions when possible: mail_read/mail_send, "
+                    "calendar_read/calendar_add, imessage_read/imessage_send."
+                ),
+            )
 
-            # 1. OBSERVE
-            last_action_str = ""
-            if state.steps:
-                last = state.steps[-1]
-                last_action_str = f"{last.action.type} {last.action.params}"
-
-            observation = self._observe(task, last_action_str)
-            print(f"  URL: {observation.url}")
-            print(f"  Title: {observation.page_title}")
-
-            # 2. THINK
             action = self._think(task, observation, state.steps)
             print(f"  Think: {action.reasoning[:120]}")
             print(f"  Action: {action.type} {action.params}")
 
-            # Stuck detection: catch repeated identical actions (wait OR same click index)
-            action_key = (action.type, str(action.params.get("index", action.params.get("url", ""))))
+            action_key = (action.type, json.dumps(action.params, sort_keys=True))
             if action_key == last_action_key:
                 stuck_count += 1
             else:
                 stuck_count = 0
             last_action_key = action_key
 
-            if stuck_count >= 3:
-                print(f"  [!] Stuck repeating '{action.type}' — pressing Escape and scrolling up")
-                # Try to dismiss any blocking overlay, then scroll to reveal more
-                from macgent.actions.dispatcher import dispatch as _dispatch
-                try:
-                    _dispatch(Action(type="key_press", params={"key": "escape"}, reasoning="escape overlay"))
-                except Exception:
-                    pass
-                action = Action(type="scroll", params={"direction": "up", "amount": 300},
-                                reasoning="Stuck on same action — scrolling up to find what's blocking")
-
-            # 3. Record step
             step = Step(step_number=step_num, observation=observation, action=action)
 
-            # 4. Terminal?
             if action.type == "done":
                 step.action_result = "Task completed"
                 state.steps.append(step)
                 state.status = "completed"
                 print(f"\n  DONE: {action.params.get('summary', '')}")
                 break
-            elif action.type == "fail":
+            if action.type == "fail":
                 step.action_result = "Task failed"
                 state.steps.append(step)
                 state.status = "failed"
                 print(f"\n  FAILED: {action.params.get('reason', '')}")
                 break
 
-            # 5. ACT
             try:
                 result = dispatch(action)
                 step.action_result = result
-                print(f"  Result: {result[:120]}")
+                print(f"  Result: {str(result)[:120]}")
             except Exception as e:
                 step.action_error = str(e)
                 print(f"  Error: {e}")
 
             state.steps.append(step)
 
-            # Log step to DB so manager can peek at progress
+            if stuck_count >= 3:
+                state.status = "failed"
+                print("\n  FAILED: Stuck repeating same action in macOS direct loop")
+                break
+
             if self.db and self.task_id:
                 outcome = step.action_result or step.action_error or ""
                 self.db.log(
@@ -170,62 +145,41 @@ class Agent:
 
         return state
 
-    def _observe(self, task: str, last_action: str = "") -> Observation:
-        obs = Observation()
+    def _run_browser_task_delegate(self, state: AgentState, task: str, reason: str) -> AgentState:
+        """Delegate browsing to the browser task adapter and map response to AgentState."""
+        action = Action(
+            type="browser_task",
+            params={
+                "task": task,
+                "mode": self.config.browser_mode,
+                "max_steps": self.config.max_steps,
+                "capture_artifacts": True,
+            },
+            reasoning=f"Delegated to browser_task ({reason})",
+        )
+        obs = Observation(url="agent-browser://delegate", page_title="Delegated browser task")
+        step = Step(step_number=len(state.steps) + 1, observation=obs, action=action)
+
+        result_raw = dispatch(action)
+        step.action_result = result_raw
+        state.steps.append(step)
 
         try:
-            obs.url = get_safari_url()
-            obs.page_title = get_safari_title()
+            payload = json.loads(result_raw)
         except Exception:
-            # Safari has no window open — open a blank one and report no page yet
-            try:
-                from macgent.actions.safari_actions import ensure_safari_window
-                ensure_safari_window()
-                obs.url = "about:blank"
-                obs.page_title = "New window opened"
-                obs.page_text = "(No page loaded yet. Use navigate to go to a URL.)"
-            except Exception as e:
-                obs.error = f"Safari not accessible: {e}"
-            return obs
+            payload = {"solved": False, "blocked_reason": "invalid_browser_task_result", "raw": result_raw}
 
-        # Page structure + text + elements
-        try:
-            structure = get_page_structure()
-            page_text = get_page_text(self.config.page_text_max_chars)
-            elements = get_page_interactive_elements()
+        solved = bool(payload.get("solved"))
+        state.status = "completed" if solved else "failed"
 
-            parts = []
-            if structure:
-                parts.append(structure)
-            if page_text:
-                text_budget = self.config.page_text_max_chars
-                if len(page_text) > text_budget:
-                    page_text = page_text[:text_budget] + "..."
-                parts.append(f"\nPAGE TEXT:\n{page_text}")
-            if elements:
-                parts.append(f"\nELEMENTS:\n{elements}")
-
-            obs.page_text = "\n".join(parts)
-        except Exception as e:
-            obs.page_text = f"(page extraction failed: {e})"
-
-        # Vision for SPAs or sparse pages
-        is_spa = any(d in (obs.url or "") for d in SPA_DOMAINS)
-        text_sparse = len(obs.page_text or "") < 200
-
-        if self.vision_client and (is_spa or text_sparse):
-            try:
-                path = take_safari_window_screenshot()
-                resized = resize_screenshot(path, self.config.screenshot_max_width)
-                img_b64 = screenshot_to_base64(resized)
-                obs.screenshot_b64 = img_b64
-                obs.screenshot_description = describe_screenshot(
-                    self.vision_client, img_b64, task, last_action,
-                )
-            except Exception as e:
-                logger.warning(f"Vision failed: {e}")
-
-        return obs
+        logger.info(
+            "browser_delegate_done reason=%s solved=%s blocked_reason=%s artifact_dir=%s",
+            reason,
+            solved,
+            payload.get("blocked_reason"),
+            payload.get("artifact_dir"),
+        )
+        return state
 
     def _think(self, task: str, observation: Observation, history: list[Step]) -> Action:
         return get_next_action(self.reasoning_client, task, observation, history, soul=self.soul)

@@ -1,63 +1,38 @@
 # macgent Skills
 
-This directory contains documentation for all available skills that macgent agents can use. These skills define what the agents can do and how to use them.
+This directory documents the skill system used by macgent agents.
 
-## Core Skills
+## Skill Tiers
 
-### [Browser Automation](./browser_automation.md)
-Control Safari browser, navigate pages, click elements, type text, and extract information from web pages.
+### Core Skills (always loaded)
+Source: `macgent/skills/*.md`
 
-### [Email Operations](./email_operations.md)
-Read emails from Mail app, send emails, parse email content, and search email archives.
+- [Browser Automation](../macgent/skills/browser_automation.md)
+- [Agent Browser](../macgent/skills/agent_browser.md)
+- [Email Operations](../macgent/skills/email_operations.md)
+- [Calendar Operations](../macgent/skills/calendar_operations.md)
+- [Messages](../macgent/skills/messages.md)
+- [AppleScript](../macgent/skills/applescript.md)
+- [JavaScript](../macgent/skills/javascript.md)
+- [macOS Direct Actions](../macgent/skills/macos.md)
+- [Evaluate Image](../macgent/skills/evaluate_image.md)
 
-### [Calendar Operations](./calendar_operations.md)
-Read calendar events, check availability, parse event details, and understand meeting schedules.
+Core skills must map to runtime actions in Python modules.
 
-### [Messages (iMessage)](./messages.md)
-Send and read iMessages, parse message threads, and communicate via Apple's messaging platform.
+### Learned Skills (always loaded after core)
+Source: `workspace/skills/*.md`
 
-### [AppleScript Automation](./applescript.md)
-Execute AppleScript commands, automate macOS applications, and control system features.
+- Example: `workspace/skills/notion.md`
 
-### [JavaScript Execution](./javascript.md)
-Run JavaScript in browser pages, extract DOM data, and interact with single-page applications.
+Learned skills are markdown-only references and do not require Python implementations.
 
-## How Agents Use Skills
+## Runtime Mapping
 
-Agents use skills through the **reasoning layer** (LLM). When deciding what to do:
+- Browser action loop: `macgent/actions/dispatcher.py` + `macgent/actions/safari_actions.py`
+- Browser delegation action: `browser_task` -> `macgent/actions/browser_use_action.py`
+- macOS direct actions: `mail_actions.py`, `calendar_actions.py`, `imessage_actions.py`
+- Skills loading order: `macgent/memory.py::load_skills`
 
-1. The agent observes the current state (screenshot, page text, interactive elements)
-2. The LLM reasons about what action to take based on the current state and task
-3. The LLM chooses a skill (e.g., "click", "type", "scroll")
-4. The dispatcher executes the skill with specific parameters
-5. The result is fed back to the agent for the next observation
+## Source of Truth
 
-## For Developers
-
-When agents don't know how to do something, it means:
-
-- The skill documentation is missing or unclear
-- The agent's system prompt doesn't explain the skill well enough
-- The action dispatcher doesn't support that skill
-- The agent needs an example or more guidance in its soul
-
-To add a new skill:
-
-1. Create a new `skill_name.md` file describing:
-   - What the skill does
-   - How to use it (with examples)
-   - Common patterns and gotchas
-   - When to use it vs alternatives
-
-2. Implement the skill in the action dispatcher
-3. Add it to the agent's system prompt (in `macgent/prompts/`)
-4. Test with an example script
-
-## Index
-
-- [Browser Automation](./browser_automation.md) - Safari navigation and interaction
-- [Email Operations](./email_operations.md) - Reading/sending emails via Mail app
-- [Calendar Operations](./calendar_operations.md) - Calendar event management
-- [Messages](./messages.md) - iMessage operations
-- [AppleScript](./applescript.md) - macOS automation scripting
-- [JavaScript](./javascript.md) - Web page JavaScript execution
+See [docs/PROJECT_SETUP.md](../docs/PROJECT_SETUP.md) for the full authoring contract and extension workflow.

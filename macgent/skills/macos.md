@@ -1,8 +1,14 @@
 # Skill: macOS Direct Actions
 
-These actions call macOS apps via AppleScript — **no browser navigation needed**.
+## Type
+Core
 
-## Mail
+## Purpose
+Always-available native macOS control for Mail, Calendar, and Messages. These actions do not require browser navigation.
+
+## Actions / Usage
+
+### Mail
 
 ```json
 {"type": "mail_read", "params": {"limit": 5}}
@@ -11,29 +17,25 @@ These actions call macOS apps via AppleScript — **no browser navigation needed
 {"type": "mail_reply", "params": {"number": 1, "body": "Reply text"}}
 ```
 
-**NEVER navigate to Gmail or any website. Just call `mail_read` / `mail_send` directly.**
-
-## Calendar
+### Calendar
 
 ```json
 {"type": "calendar_read", "params": {"year": 2026, "month": 3, "day": 15}}
 {"type": "calendar_add", "params": {"summary": "Meeting", "year": 2026, "month": 3, "day": 15, "hour": 14, "minute": 0, "duration_hours": 1}}
 ```
 
-**NEVER open the Calendar app or navigate anywhere. Just call the action.**
-
-## iMessage
+### iMessage
 
 ```json
 {"type": "imessage_read", "params": {"contact": "+41791234567", "limit": 10}}
 {"type": "imessage_send", "params": {"contact": "+41791234567", "text": "Hello!"}}
 ```
 
-**NEVER open Messages app or navigate anywhere. Just call the action.**
+## Constraints
 
-## Key Rule
+- Do not route Mail/Calendar/Messages tasks through web UI unless explicitly requested.
+- Call direct actions immediately; avoid opening browser tabs for these operations.
 
-If the task involves email, calendar, or iMessage:
-→ Use the direct action **immediately**
-→ Do NOT `navigate`, do NOT `open_app` first
-→ The first action should be the macOS action itself
+## Failure / Escalation
+
+If native app control fails, return a clear error and required manual preconditions (app permissions/account setup).

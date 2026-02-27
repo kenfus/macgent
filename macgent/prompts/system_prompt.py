@@ -95,6 +95,11 @@ notion_schema: Inspect the database schema (properties and options)
 
 Refer to your Notion skill doc for property names, status values, and filter syntax.
 
+### Vision Utility
+evaluate_image: Send an image to the configured vision model chain (useful when text model is not multimodal)
+  {"reasoning": "...", "action": {"type": "evaluate_image", "params": {"path": "workspace/screenshots/page.png", "prompt": "Describe UI elements and blockers"}}}
+  {"reasoning": "...", "action": {"type": "evaluate_image", "params": {"image_base64": "...", "media_type": "image/png", "prompt": "Extract key text"}}}
+
 ### Control
 wait: Wait for page to load
   {"reasoning": "...", "action": {"type": "wait", "params": {"seconds": 2}}}

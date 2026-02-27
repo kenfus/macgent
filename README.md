@@ -25,22 +25,14 @@ cp .env.example .env
 
 ### Configuration
 
-Create a `.env` file with your API keys:
+Create a `.env` file and a `macgent_config.json` routing file:
 
 ```bash
-# OpenRouter or OpenAI API
-REASONING_API_KEY=sk_openrouter_xxx
-REASONING_API_BASE=https://openrouter.ai/api/v1
-REASONING_MODEL=claude-opus-4.6  # or your preferred model
-
-# For vision (optional)
-VISION_API_KEY=...
-VISION_MODEL=claude-opus-4.6
-
-# Telegram Bot (optional)
-TELEGRAM_BOT_TOKEN=your_bot_token
-TELEGRAM_CHAT_ID=your_chat_id
+cp .env.example .env
+cp macgent_config.json.example macgent_config.json
 ```
+
+In `.env`, set API keys and `MACGENT_CONFIG_PATH`. In `macgent_config.json`, set primary/fallback text and vision model aliases.
 
 ### First Task
 
@@ -87,18 +79,30 @@ These agents have **souls** (character definitions) and **memory** (learning fro
 
 ## Core Concepts
 
+### Skill System
+
+macgent uses two skill tiers:
+- **Core skills** (`macgent/skills/*.md`) are always loaded and must map to runtime actions.
+- **Learned skills** (`workspace/skills/*.md`) are environment-specific markdown references.
+
+Load order is always core first, then learned skills.
+
 ### Skills
 
 Available capabilities agents can use:
 
-- **[Browser Automation](./skills/browser_automation.md)** — Navigate, click, type, scroll in Safari
-- **[Email Operations](./skills/email_operations.md)** — Read/send emails via Mail app
-- **[Calendar](./skills/calendar_operations.md)** — Read events and check availability
-- **[iMessages](./skills/messages.md)** — Send/read iMessages
-- **[AppleScript](./skills/applescript.md)** — Control macOS applications
-- **[JavaScript](./skills/javascript.md)** — Extract data from web pages
+- **[Browser Automation](./macgent/skills/browser_automation.md)** — Navigate, click, type, scroll in Safari
+- **[Agent Browser](./macgent/skills/agent_browser.md)** — Primary browser-task delegation runtime
+- **[Email Operations](./macgent/skills/email_operations.md)** — Read/send emails via Mail app
+- **[Calendar](./macgent/skills/calendar_operations.md)** — Read events and check availability
+- **[iMessages](./macgent/skills/messages.md)** — Send/read iMessages
+- **[AppleScript](./macgent/skills/applescript.md)** — Control macOS applications
+- **[JavaScript](./macgent/skills/javascript.md)** — Extract data from web pages
+- **[Evaluate Image](./macgent/skills/evaluate_image.md)** — Vision fallback for non-multimodal text models
 
 See [skills/README.md](./skills/README.md) for detailed documentation.
+
+Skill architecture and runtime mapping are documented in [docs/PROJECT_SETUP.md](./docs/PROJECT_SETUP.md).
 
 ### Souls
 
@@ -184,26 +188,7 @@ uv run macgent daemon --once
 
 ### Environment Variables
 
-See `.env.example` for all options:
-
-```
-# LLM API
-REASONING_API_KEY=...        # Required
-REASONING_API_BASE=...       # Default: OpenRouter
-REASONING_MODEL=...          # Default: claude-opus-4.6
-
-# Vision (optional)
-VISION_API_KEY=...
-VISION_MODEL=...
-
-# Telegram (optional)
-TELEGRAM_BOT_TOKEN=...
-TELEGRAM_CHAT_ID=...
-
-# System
-MAX_STEPS=20                 # Max steps per task
-DAEMON_INTERVAL=60           # Daemon check interval
-```
+See `.env.example` for current options. Model routing is defined in `macgent_config.json` (primary + fallback chains for text and vision).
 
 ### Soul Customization
 

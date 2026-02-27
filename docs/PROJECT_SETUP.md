@@ -1,0 +1,124 @@
+# Project Setup: Skills + Model Routing
+
+This document is the source of truth for how macgent is structured and extended.
+
+Model routing is configured in `macgent_config.json` (copy from `macgent_config.json.example`).
+
+## Architecture Overview
+
+macgent has two skill classes with different lifecycle rules:
+
+1. **Core skills**
+- Location: `macgent/skills/*.md`
+- Load behavior: always loaded first by `MemoryManager.load_skills()`
+- Requirement: must map to real runtime actions/functions in Python
+- Purpose: foundational capabilities needed every run (browser, macOS, communication, files, memory)
+
+2. **Learned skills**
+- Location: `workspace/skills/*.md`
+- Load behavior: loaded after core skills on every run
+- Requirement: markdown-only guidance (no required Python module)
+- Purpose: environment/user-specific operating knowledge (for example Notion schema)
+
+Load precedence is always: **core -> learned**.
+
+## Skill Authoring Contract
+
+Each skill markdown should include these sections in order:
+
+1. `# Skill: <Name>`
+2. `## Type` (`Core` or `Learned`)
+3. `## Purpose`
+4. `## Actions / Usage`
+5. `## Constraints`
+6. `## Examples`
+7. `## Failure / Escalation`
+
+### Rules
+
+- Core skills must list exact action names and parameters as implemented in dispatcher/runtime code.
+- Learned skills must stay markdown-only. Do not add Python code as part of a learned skill.
+- Keep one concern per file. If a learned skill grows too large, split by domain and link from an index file.
+
+## Runtime Mapping Table
+
+| Skill | Type | Dispatcher Actions | Runtime Module |
+|---|---|---|---|
+| `browser_automation.md` | Core | `navigate`, `click`, `type`, `scroll`, `execute_js`, `wait` | `macgent/actions/dispatcher.py`, `macgent/actions/safari_actions.py` |
+| `agent_browser.md` | Core | `browser_task` | `macgent/actions/browser_use_action.py`, `macgent/actions/agent_browser.py` |
+| `macos.md` | Core | `mail_*`, `calendar_*`, `imessage_*`, `open_app` | `macgent/actions/mail_actions.py`, `calendar_actions.py`, `imessage_actions.py` |
+| `email_operations.md` | Core | `mail_read`, `mail_read_full`, `mail_send`, `mail_reply` | `macgent/actions/mail_actions.py` |
+| `files.md` | Core | `read_file`, `write_file`, `edit_file`, `delete_file` | `macgent/actions/dispatcher.py` |
+| `workspace/skills/notion.md` | Learned | `notion_*` usage reference only | Runtime implemented in `macgent/actions/notion_actions.py` |
+| `evaluate_image.md` | Core | `evaluate_image` | `macgent/actions/dispatcher.py` + vision fallback chain |
+
+## Browser Strategy
+
+`BROWSER_MODE=agent_browser` is the supported runtime for web execution in the current architecture.
+
+`BROWSER_HEADED=false` keeps browser windows hidden (recommended for normal runs).
+Set `BROWSER_HEADED=true` only for debugging visual interactions.
+
+Captcha policy:
+
+- Detect challenge signals (`captcha`, `verify human`, `not a robot`, and anti-bot pages)
+- Allow one auto-attempt (`CAPTCHA_AUTO_ATTEMPTS=1` by default)
+- If still unsolved, return blocked with artifact path under `workspace/browser_runs/<timestamp>/`
+
+## Model Routing
+
+Defaults:
+
+- Browser reasoning: `arcee-ai/trinity-large-preview:free`
+- Browser vision: `nvidia/nemotron-nano-12b-v2-vl:free`
+
+Optional last-resort model can be configured via environment (for example KILO model names), but free OpenRouter defaults stay primary.
+
+Unified model routing knobs:
+- `TEXT_MODEL_PRIMARY` and `TEXT_MODEL_FALLBACKS`
+- `VISION_MODEL_PRIMARY` and `VISION_MODEL_FALLBACKS`
+
+Built-in aliases:
+- Text: `openrouter_primary`, `openrouter_trinity`, `openrouter_nemotron_text`, `kilo_glm5`, `kilo_glm47`
+- Vision: `openrouter_vision_primary`, `openrouter_nemotron_vl`
+
+Unknown alias values are treated as direct model IDs on the primary provider base URL.
+
+## Adding a New Core Skill
+
+1. Create/update `macgent/skills/<skill>.md` with the authoring contract.
+2. Implement runtime actions in dispatcher/actions modules.
+3. Add prompt references if needed (`macgent/prompts/`).
+4. Add tests for action dispatch and failure behavior.
+5. Update mapping table in this file.
+
+## Adding a New Learned Skill
+
+1. Create `workspace/skills/<skill>.md`.
+2. Document usage patterns, schemas, edge cases.
+3. Keep it markdown-only (no runtime module required).
+4. Add links from `skills/README.md` or manager docs if relevant.
+
+## Observability and Artifacts
+
+Browser delegation writes artifacts to:
+
+- `workspace/browser_runs/<timestamp>/result.json`
+- `workspace/browser_runs/<timestamp>/page.png` (best effort)
+- `workspace/browser_runs/<timestamp>/error.txt` (on failure)
+
+Logs include backend selection, fallback reason, detection signals, and completion status.
+
+
+## Centralized Error Management
+
+LLM retries/fallback are centralized in `FallbackLLMClient`:
+- Retries on configured HTTP statuses (default: 429, 503, 504)
+- Exponential backoff per offer
+- Automatic fallback to next offer when retries are exhausted
+
+Tune this in `macgent_config.json -> error_policy` with:
+- `retry_statuses`
+- `max_retries_per_offer`
+- `backoff_seconds`
+- `backoff_multiplier`

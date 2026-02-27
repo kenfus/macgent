@@ -352,6 +352,10 @@ class AgentBrowser:
     def click(self, selector: str) -> str:
         """Click an element by selector or @ref."""
         return self._run_command("click", selector)
+
+    def double_click(self, selector: str) -> str:
+        """Double-click an element by selector or @ref."""
+        return self._run_command("dblclick", selector)
     
     def fill(self, selector: str, text: str) -> str:
         """Clear and fill an input element."""
@@ -368,10 +372,30 @@ class AgentBrowser:
     def hover(self, selector: str) -> str:
         """Hover over an element."""
         return self._run_command("hover", selector)
+
+    def drag(self, source: str, target: str) -> str:
+        """Drag an element to another element."""
+        return self._run_command("drag", source, target)
     
     def scroll(self, direction: str, pixels: int = 500) -> str:
         """Scroll the page (up/down/left/right)."""
         return self._run_command("scroll", direction, str(pixels))
+
+    def mouse_move(self, x: int, y: int) -> str:
+        """Move mouse pointer to screen coordinates."""
+        return self._run_command("mouse", "move", str(x), str(y))
+
+    def mouse_down(self, button: str = "left") -> str:
+        """Press and hold a mouse button."""
+        return self._run_command("mouse", "down", button)
+
+    def mouse_up(self, button: str = "left") -> str:
+        """Release a mouse button."""
+        return self._run_command("mouse", "up", button)
+
+    def mouse_wheel(self, dy: int, dx: int = 0) -> str:
+        """Scroll mouse wheel."""
+        return self._run_command("mouse", "wheel", str(dy), str(dx))
     
     def screenshot(self, path: str, full_page: bool = False) -> str:
         """Take a screenshot."""
@@ -383,22 +407,34 @@ class AgentBrowser:
     def get_text(self, selector: str | None = None) -> str:
         """Get text content from the page or a specific element."""
         if selector:
-            return self._run_command("get", "text", selector)
-        return self._run_command("get", "text")
+            script = f"""
+            (() => {{
+                const el = document.querySelector({json.dumps(selector)});
+                return el ? (el.innerText || el.textContent || "") : "";
+            }})()
+            """
+            return self.eval_js(script)
+        return self.eval_js("document.body ? (document.body.innerText || document.body.textContent || '') : ''")
     
     def get_html(self, selector: str | None = None) -> str:
         """Get HTML content from the page or a specific element."""
         if selector:
-            return self._run_command("get", "html", selector)
-        return self._run_command("get", "html")
+            script = f"""
+            (() => {{
+                const el = document.querySelector({json.dumps(selector)});
+                return el ? el.outerHTML : "";
+            }})()
+            """
+            return self.eval_js(script)
+        return self.eval_js("document.documentElement ? document.documentElement.outerHTML : ''")
     
     def get_url(self) -> str:
         """Get the current page URL."""
-        return self._run_command("get", "url")
+        return self.eval_js("window.location.href")
     
     def get_title(self) -> str:
         """Get the current page title."""
-        return self._run_command("get", "title")
+        return self.eval_js("document.title")
     
     def eval_js(self, script: str) -> str:
         """Execute JavaScript in the browser."""
@@ -528,3 +564,215 @@ def quick_open(url: str, headed: bool = True) -> tuple[AgentBrowser, dict[str, A
     
     snapshot = browser.snapshot(interactive=True)
     return browser, snapshot
+
+
+def find_element_by(
+    snapshot: dict[str, Any],
+    role: str | None = None,
+    name_contains: str | None = None,
+    tag_name: str | None = None,
+    exact_name: str | None = None,
+) -> dict[str, Any] | None:
+    """Find an element in a snapshot by various criteria.
+    
+    Args:
+        snapshot: The snapshot dict from browser.snapshot(interactive=True)
+        role: ARIA role to match (e.g., 'button', 'textbox', 'link')
+        name_contains: Substring to search for in element name (case-insensitive)
+        tag_name: HTML tag name to match (e.g., 'BUTTON', 'INPUT', 'A')
+        exact_name: Exact name to match (case-insensitive)
+    
+    Returns:
+        The first matching element dict, or None if not found
+    
+    Example:
+        snapshot = browser.snapshot(interactive=True)
+        btn = find_element_by(snapshot, role='button', name_contains='search')
+        if btn:
+            browser.click(btn['ref'])
+    """
+    elements = snapshot.get('elements', [])
+    
+    for el in elements:
+        # Check role
+        if role and el.get('role', '').lower() != role.lower():
+            continue
+        
+        # Check exact name
+        if exact_name and el.get('name', '').lower() != exact_name.lower():
+            continue
+        
+        # Check name contains
+        if name_contains and name_contains.lower() not in el.get('name', '').lower():
+            continue
+        
+        # Check tag name
+        if tag_name and el.get('tagName', '').upper() != tag_name.upper():
+            continue
+        
+        return el
+    
+    return None
+
+
+def find_all_elements_by(
+    snapshot: dict[str, Any],
+    role: str | None = None,
+    name_contains: str | None = None,
+    tag_name: str | None = None,
+) -> list[dict[str, Any]]:
+    """Find all elements in a snapshot matching criteria.
+    
+    Args:
+        snapshot: The snapshot dict from browser.snapshot(interactive=True)
+        role: ARIA role to match (e.g., 'button', 'textbox', 'link')
+        name_contains: Substring to search for in element name (case-insensitive)
+        tag_name: HTML tag name to match (e.g., 'BUTTON', 'INPUT', 'A')
+    
+    Returns:
+        List of matching element dicts
+    
+    Example:
+        snapshot = browser.snapshot(interactive=True)
+        buttons = find_all_elements_by(snapshot, role='button')
+        for btn in buttons:
+            print(f"{btn['ref']}: {btn.get('name')}")
+    """
+    elements = snapshot.get('elements', [])
+    matches = []
+    
+    for el in elements:
+        # Check role
+        if role and el.get('role', '').lower() != role.lower():
+            continue
+        
+        # Check name contains
+        if name_contains and name_contains.lower() not in el.get('name', '').lower():
+            continue
+        
+        # Check tag name
+        if tag_name and el.get('tagName', '').upper() != tag_name.upper():
+            continue
+        
+        matches.append(el)
+    
+    return matches
+
+
+def handle_popup(
+    browser: AgentBrowser,
+    keywords: list[str] | None = None,
+    timeout: float = 5.0,
+) -> bool:
+    """Attempt to dismiss a popup by clicking common dismiss buttons.
+    
+    Args:
+        browser: The AgentBrowser instance
+        keywords: Custom keywords to look for in button names
+        timeout: How long to wait before giving up
+    
+    Returns:
+        True if a popup was dismissed, False otherwise
+    
+    Example:
+        browser.open('https://example.com')
+        time.sleep(2)
+        if handle_popup(browser):
+            print("Popup dismissed!")
+    """
+    if keywords is None:
+        keywords = [
+            'accept', 'agree', 'accept all', 'accept all cookies',
+            'close', 'dismiss', 'x', '×',
+            'akzeptieren', 'alle akzeptieren', 'schliessen', 'ablehnen',
+            'reject', 'reject all', 'continue', 'got it', 'ok', 'okay',
+            'verstanden', 'zustimmen', 'einverstanden',
+        ]
+    
+    time.sleep(0.5)  # Brief wait for popup to appear
+    snapshot = browser.snapshot(interactive=True)
+    
+    for el in snapshot.get('elements', []):
+        name = el.get('name', '').lower().strip()
+        role = el.get('role', '')
+        
+        # Only check buttons and links
+        if role not in ('button', 'link'):
+            continue
+        
+        # Check if any keyword matches
+        for keyword in keywords:
+            if keyword.lower() in name:
+                logger.info(f"Dismissing popup: clicking '{name}' ({el['ref']})")
+                browser.click(el['ref'])
+                time.sleep(1)
+                return True
+    
+    return False
+
+
+def wait_for_element(
+    browser: AgentBrowser,
+    name_contains: str,
+    max_wait: float = 10.0,
+    poll_interval: float = 0.5,
+) -> dict[str, Any] | None:
+    """Wait for an element to appear on the page.
+    
+    Args:
+        browser: The AgentBrowser instance
+        name_contains: Substring to look for in element name
+        max_wait: Maximum time to wait in seconds
+        poll_interval: How often to check for the element
+    
+    Returns:
+        The element dict if found, None if timeout
+    
+    Example:
+        browser.click(search_button)
+        result = wait_for_element(browser, 'result', max_wait=15.0)
+        if result:
+            print(f"Found: {result['ref']}")
+    """
+    start_time = time.time()
+    
+    while time.time() - start_time < max_wait:
+        snapshot = browser.snapshot(interactive=True)
+        el = find_element_by(snapshot, name_contains=name_contains)
+        if el:
+            return el
+        time.sleep(poll_interval)
+    
+    logger.warning(f"Element '{name_contains}' not found after {max_wait}s")
+    return None
+
+
+def extract_text_from_snapshot(snapshot: dict[str, Any]) -> str:
+    """Extract all text content from a snapshot.
+    
+    Args:
+        snapshot: The snapshot dict from browser.snapshot(interactive=True)
+    
+    Returns:
+        Concatenated text from all elements
+    
+    Example:
+        snapshot = browser.snapshot(interactive=True)
+        text = extract_text_from_snapshot(snapshot)
+        print(text)
+    """
+    texts = []
+    for el in snapshot.get('elements', []):
+        name = el.get('name', '')
+        if name and name.strip():
+            texts.append(name.strip())
+    return ' '.join(texts)
+
+
+# Pre-defined popup keywords for common sites
+POPUP_KEYWORDS = {
+    'homegate.ch': ['akzeptieren', 'alle akzeptieren', 'accept', 'agree'],
+    'booking.com': ['accept', 'agree', 'akzeptieren', 'got it'],
+    'google.com': ['accept all', 'agree', 'reject all'],
+    'youtube.com': ['agree', 'accept all', 'akzeptieren'],
+}
