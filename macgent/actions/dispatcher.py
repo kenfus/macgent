@@ -470,7 +470,7 @@ def dispatch(action: Action) -> str:
             return "TASK_FAILED: " + p.get("reason", "unknown")
 
         else:
-            return f"ERROR: Unknown action type: {t}"
+            return f"ERROR: Unknown action type '{t}'. Do not retry. Check your Skills context for supported actions and use the correct type."
 
     except Exception as e:
         logger.error(f"Action error: {e}")
