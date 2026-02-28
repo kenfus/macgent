@@ -104,7 +104,7 @@ class MemoryManager:
         """Append cleaned text to today's daily memory file.
 
         File path is always:
-        <workspace>/memory/<YYYY-MM-DD>_MEMORY.md
+        {{WORKSPACE_DIR}}//memory/<YYYY-MM-DD>_MEMORY.md
         """
         today = datetime.date.today()
         path = self._daily_memory_path(today)
@@ -314,6 +314,10 @@ class MemoryManager:
         identity = self.load_identity(role)
         if identity:
             sections.append(("Identity", identity))
+
+        skills = self.load_skills()
+        if skills:
+            sections.append(("Skills", skills))
 
         core_memory = self.load_core_memory()
         if core_memory:

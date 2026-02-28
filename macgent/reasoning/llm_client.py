@@ -70,6 +70,7 @@ class LLMClient:
             "messages": all_messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
+            "response_format": {"type": "json_object"},
         }
         headers = {
             "Content-Type": "application/json",

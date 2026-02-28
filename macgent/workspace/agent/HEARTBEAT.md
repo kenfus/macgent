@@ -19,25 +19,4 @@ Work through this checklist using your Notion skill doc for board-specific detai
 
 4. **Board health** — how many tasks are ready, in progress, blocked? Only note if something needs attention.
 
-## Response Format
-
-Execute actions as JSON. Multiple actions per turn are fine:
-```json
-{"actions": [
-  {"type": "notion_query", "params": {"filter": {...}}},
-  {"type": "send_telegram", "params": {"text": "..."}}
-]}
-```
-
-## HEARTBEAT_OK
-
-If after checking everything you find nothing actionable:
-- No blocked tasks needing attention
-- No CEO messages to process
-- No new emails worth acting on
-- No stale tasks to re-queue
-- Board looks healthy
-
-Then respond with exactly: `HEARTBEAT_OK`
-
-Do NOT send a Telegram message for empty heartbeats. The CEO doesn't need to know about nothing.
+When done with all actions, finish with `{"type": "heartbeat_ok"}`.

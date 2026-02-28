@@ -70,12 +70,12 @@ class ManagerRole(BaseRole):
         elif is_active_wake and not bootstrapped:
             logger.info("Active wake ignored during bootstrap-only mode")
 
-        # First boot is bootstrap-only: SOUL + BOOTSTRAP, no extra memory/skills context.
+        # All modes share the same full context (soul + skills + memory).
+        # Only the user prompt differs: BOOTSTRAP.md, HEARTBEAT.md, or a CEO message.
+        system = self.get_system_prompt()
         if not bootstrapped:
-            system = self.memory.load_soul("agent")
             prompt = self._load_manager_task_prompt()
         else:
-            system = self.get_system_prompt()
             if ceo_message:
                 prompt = (
                     "Process this CEO message now. Execute actions as needed. "
@@ -96,13 +96,13 @@ class ManagerRole(BaseRole):
                 logger.error("Manager LLM call failed: %s", e)
                 break
 
-            if "HEARTBEAT_OK" in response:
-                return did_work
-
             data = self.parse_json(response)
             if not data:
                 logger.debug("Manager returned non-JSON; stopping tick")
                 break
+
+            if data.get("type") == "heartbeat_ok":
+                return did_work
 
             actions = data.get("actions", [])
             if not actions and "action" in data:

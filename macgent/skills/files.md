@@ -30,7 +30,7 @@ Append content to the end of a file. Creates the file if it does not exist.
 ## append_to_daily_memory
 
 Append text to today's daily memory file at:
-`<workspace>/memory/<YYYY-MM-DD>_MEMORY.md`
+`{{WORKSPACE_DIR}}//memory/<YYYY-MM-DD>_MEMORY.md`
 
 Input is cleaned as `text.strip()` and then written with exactly one trailing newline.
 
