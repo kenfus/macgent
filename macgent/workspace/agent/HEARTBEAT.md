@@ -8,7 +8,7 @@ Work through this checklist using your Notion skill doc for board-specific detai
 
 1. **Query the Notion board** — use `notion_query` to see the current state. Check for:
    - Blocked tasks (read the Notes, formulate a clear question, ask CEO via `send_telegram`)
-   - Stale in-progress tasks (worker likely died — update status back to ready)
+   - Stale in-progress tasks (agent execution likely died — update status back to ready)
    - Tasks waiting for clarification (did CEO reply? If so, update and move to ready)
 
 2. **Check CEO messages** — any new messages provided in your context? If so:

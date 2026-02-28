@@ -19,6 +19,25 @@ Create or fully overwrite a file. Use for new files or when replacing everything
 {"type": "write_file", "params": {"path": "<path>", "content": "<content>"}}
 ```
 
+## append_file
+
+Append content to the end of a file. Creates the file if it does not exist.
+
+```json
+{"type": "append_file", "params": {"path": "<path>", "content": "<content_to_append>"}}
+```
+
+## append_to_daily_memory
+
+Append text to today's daily memory file at:
+`<workspace>/memory/<YYYY-MM-DD>_MEMORY.md`
+
+Input is cleaned as `text.strip()` and then written with exactly one trailing newline.
+
+```json
+{"type": "append_to_daily_memory", "params": {"text": "<memory_text>"}}
+```
+
 ## edit_file
 
 Replace an exact string in a file. The `old_string` must match exactly once — make it specific enough. Read the file first if unsure of the exact text.
@@ -42,4 +61,3 @@ Delete a file in the workspace. Cannot delete directories or escape outside the 
 ```
 
 Returns an error if the file does not exist.
-

@@ -19,12 +19,13 @@ class MemoryManager:
     def __init__(self, config):
         self.config = config
         self.workspace_dir = Path(config.workspace_dir)
+        self.agent_dir = self.workspace_dir / "agent"
 
         self.memory_root = self.workspace_dir / "memory"
-        self.daily_dir = self.memory_root / "daily"
+        self.daily_dir = self.memory_root
         self.task_history_dir = self.memory_root / "task_history"
         self.semantic_path = self.memory_root / "semantic_memories.jsonl"
-        self.core_memory_path = self.workspace_dir / "core_memory.md"
+        self.core_memory_path = self.agent_dir / "memory" / "CORE_MEMORY.md"
         self.recent_days = max(1, int(getattr(config, "memory_recent_days", 2)))
         self.top_k = max(1, int(getattr(config, "memory_top_k", 5)))
 
@@ -33,6 +34,7 @@ class MemoryManager:
 
     def _ensure_workspace(self):
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
+        self.agent_dir.mkdir(parents=True, exist_ok=True)
         (self.workspace_dir / "skills").mkdir(parents=True, exist_ok=True)
         self.memory_root.mkdir(parents=True, exist_ok=True)
         self.daily_dir.mkdir(parents=True, exist_ok=True)
@@ -40,42 +42,81 @@ class MemoryManager:
         if not self.semantic_path.exists():
             self.semantic_path.write_text("")
 
+    def _render_vars(self, text: str) -> str:
+        return (text or "").replace("{{WORKSPACE_DIR}}", str(self.workspace_dir))
+
     def load_soul(self, role: str) -> str:
-        soul_path = self.workspace_dir / role / "soul.md"
-        if soul_path.exists():
-            return soul_path.read_text()
+        candidates = [
+            self.workspace_dir / role / "SOUL.md",
+            self.workspace_dir / role / "soul.md",
+        ]
+        for soul_path in candidates:
+            if soul_path.exists():
+                return self._render_vars(soul_path.read_text())
         return f"You are the {role} agent."
 
     def load_identity(self, role: str) -> str:
         """Load role identity from preferred lowercase file with uppercase fallback."""
-        lower = self.workspace_dir / role / "identity.md"
         upper = self.workspace_dir / role / "IDENTITY.md"
-        if lower.exists():
-            return lower.read_text()
+        lower = self.workspace_dir / role / "identity.md"
         if upper.exists():
-            return upper.read_text()
+            return self._render_vars(upper.read_text())
+        if lower.exists():
+            return self._render_vars(lower.read_text())
         return ""
 
     def load_core_memory(self) -> str:
-        if self.core_memory_path.exists():
-            return self.core_memory_path.read_text()
+        candidates = [
+            self.agent_dir / "memory" / "CORE_MEMORY.md",
+            self.workspace_dir / "core_memory.md",
+        ]
+        for p in candidates:
+            if p.exists():
+                return self._render_vars(p.read_text())
         # Backward-compat fallback for older layout.
         for role in ("manager", "worker"):
             legacy = self.workspace_dir / role / "core_memory.md"
             if legacy.exists():
-                return legacy.read_text()
+                return self._render_vars(legacy.read_text())
         return ""
 
     def load_curated_memory(self, role: str) -> str:
-        path = self.workspace_dir / role / "MEMORY.md"
-        return path.read_text() if path.exists() else ""
+        candidates = [
+            self.workspace_dir / role / "memory" / "LONGTERM_MEMORY.md",
+            self.workspace_dir / role / "MEMORY.md",
+        ]
+        for path in candidates:
+            if path.exists():
+                return self._render_vars(path.read_text())
+        return ""
 
     def get_heartbeat_instructions(self) -> str:
-        path = self.workspace_dir / "manager" / "heartbeat.md"
-        return path.read_text() if path.exists() else ""
+        candidates = [self.workspace_dir / "agent" / "HEARTBEAT.md"]
+        for path in candidates:
+            if path.exists():
+                return self._render_vars(path.read_text())
+        return ""
 
     def _daily_memory_path(self, day: datetime.date) -> Path:
-        return self.daily_dir / f"memory-{day.isoformat()}.md"
+        return self.daily_dir / f"{day.isoformat()}_MEMORY.md"
+
+    def append_to_daily_memory(self, text: str) -> str:
+        """Append cleaned text to today's daily memory file.
+
+        File path is always:
+        <workspace>/memory/<YYYY-MM-DD>_MEMORY.md
+        """
+        today = datetime.date.today()
+        path = self._daily_memory_path(today)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        cleaned = (text or "").strip()
+        if not cleaned:
+            return str(path)
+
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(cleaned + "\n")
+        return str(path)
 
     def get_recent_memory(self, days: int | None = None) -> str:
         parts = []
@@ -308,16 +349,8 @@ class MemoryManager:
 
         return self.combine_markdown_sections(sections)
 
-    def write_daily_log(self, db, content: str, role: str = "manager"):
-        today = datetime.date.today()
-        path = self._daily_memory_path(today)
-        now = datetime.datetime.now().strftime("%H:%M")
-
-        if not path.exists():
-            path.write_text(f"# Memory Log — {today.isoformat()}\n")
-
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(f"\n## {now}\n{content}\n")
+    def write_daily_log(self, db, content: str, role: str = "agent"):
+        self.append_to_daily_memory(content)
         self.remember(db, role, content, category="daily_log")
 
     def get_today_memory(self) -> str:

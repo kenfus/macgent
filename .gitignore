@@ -211,3 +211,4 @@ data/
 /workspace/
 *.faiss
 *.db
+macgent_config.json

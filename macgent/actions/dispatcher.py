@@ -68,6 +68,16 @@ def _read_image_as_base64(path_or_rel: str) -> str:
     return base64.b64encode(path.read_bytes()).decode("ascii")
 
 
+def _resolve_workspace_path(path_or_rel: str) -> Path:
+    """Resolve relative or absolute path and enforce workspace sandbox."""
+    workspace = _get_workspace_dir().resolve()
+    raw = Path(path_or_rel)
+    path = raw.resolve() if raw.is_absolute() else (workspace / raw).resolve()
+    if not str(path).startswith(str(workspace)):
+        raise ValueError("path must be within workspace")
+    return path
+
+
 def _build_dispatch_vision_client():
     class _VisionCfg:
         reasoning_api_base = _dispatch_config.get("reasoning_api_base", "https://openrouter.ai/api/v1")
@@ -281,8 +291,9 @@ def dispatch(action: Action) -> str:
             rel = p.get("path", "")
             if not rel:
                 return "ERROR: read_file needs 'path'"
-            path = (_get_workspace_dir() / rel).resolve()
-            if not str(path).startswith(str(_get_workspace_dir().resolve())):
+            try:
+                path = _resolve_workspace_path(rel)
+            except ValueError:
                 return "ERROR: path must be within workspace"
             if not path.exists():
                 return f"File not found: {rel}"
@@ -300,13 +311,45 @@ def dispatch(action: Action) -> str:
             content = p.get("content", "")
             if not rel:
                 return "ERROR: write_file needs 'path' and 'content'"
-            path = (_get_workspace_dir() / rel).resolve()
-            if not str(path).startswith(str(_get_workspace_dir().resolve())):
+            try:
+                path = _resolve_workspace_path(rel)
+            except ValueError:
                 return "ERROR: path must be within workspace"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content)
             logger.info(f"File written: {rel} ({len(content)} chars)")
             return f"Written: {rel}"
+
+        elif t == "append_file":
+            # Append content to a file in the workspace. Creates file if missing.
+            rel = p.get("path", "")
+            content = p.get("content", "")
+            if not rel:
+                return "ERROR: append_file needs 'path' and 'content'"
+            try:
+                path = _resolve_workspace_path(rel)
+            except ValueError:
+                return "ERROR: path must be within workspace"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(content)
+            logger.info(f"File appended: {rel} (+{len(content)} chars)")
+            return f"Appended: {rel}"
+
+        elif t == "append_to_daily_memory":
+            # Append cleaned text to <workspace>/memory/<YYYY-MM-DD>_MEMORY.md.
+            text = p.get("text", p.get("content", ""))
+            if not str(text).strip():
+                return "ERROR: append_to_daily_memory needs non-empty 'text' (or 'content')"
+
+            from macgent.memory import MemoryManager
+
+            class _Cfg:
+                workspace_dir = str(_get_workspace_dir())
+
+            mm = MemoryManager(_Cfg())
+            written_path = mm.append_to_daily_memory(str(text))
+            return f"Appended daily memory: {written_path}"
 
         elif t == "edit_file":
             # Replace exact text in a file — like a precise find-and-replace.
@@ -316,8 +359,9 @@ def dispatch(action: Action) -> str:
             new = p.get("new_string", "")
             if not rel or old == "":
                 return "ERROR: edit_file needs 'path', 'old_string', and 'new_string'"
-            path = (_get_workspace_dir() / rel).resolve()
-            if not str(path).startswith(str(_get_workspace_dir().resolve())):
+            try:
+                path = _resolve_workspace_path(rel)
+            except ValueError:
                 return "ERROR: path must be within workspace"
             if not path.exists():
                 return f"File not found: {rel}"
@@ -335,8 +379,9 @@ def dispatch(action: Action) -> str:
             rel = p.get("path", "")
             if not rel:
                 return "ERROR: delete_file needs 'path'"
-            path = (_get_workspace_dir() / rel).resolve()
-            if not str(path).startswith(str(_get_workspace_dir().resolve())):
+            try:
+                path = _resolve_workspace_path(rel)
+            except ValueError:
                 return "ERROR: path must be within workspace"
             if not path.exists():
                 return f"File not found: {rel}"

@@ -30,9 +30,7 @@ def _run_setup_wizard(config, env_path: Path):
     Never involves the LLM — pure Python/terminal.
     Returns an updated config object.
     """
-    has_name = bool(os.getenv("MACGENT_NAME", "").strip())
-    has_workspace = bool(os.getenv("MACGENT_WORKSPACE_DIR", "").strip())
-    needs_setup = (not has_name) or (not has_workspace) or (not config.telegram_bot_token) or (not config.telegram_chat_id)
+    needs_setup = (not config.telegram_bot_token) or (not config.telegram_chat_id)
     if not needs_setup:
         return config
 
@@ -40,24 +38,10 @@ def _run_setup_wizard(config, env_path: Path):
     print("=" * 60)
     print("  macgent — first-time setup")
     print("=" * 60)
-    suggested_workspace = str((Path.cwd() / "workspace").resolve())
-    print(f"\nSuggested workspace: {suggested_workspace}")
-    print(f"Current workspace:   {config.workspace_dir}")
-    print(f"Current log file:    {config.log_file}")
+    print(f"\nWorkspace: {config.workspace_dir}")
+    print(f"Log file:  {config.log_file}")
 
     new_values = {}
-
-    # ── Core identity/workspace ──────────────────────────────
-    if not has_name:
-        default_name = config.macgent_name or "MacGent"
-        name = input(f"Agent name [{default_name}]: ").strip() or default_name
-        new_values["MACGENT_NAME"] = name
-
-    if not has_workspace:
-        raw_workspace = input(f"Workspace directory [{suggested_workspace}]: ").strip() or suggested_workspace
-        workspace_dir = str(Path(raw_workspace).expanduser().resolve())
-        new_values["MACGENT_WORKSPACE_DIR"] = workspace_dir
-        new_values["MACGENT_LOG_FILE"] = str(Path(workspace_dir) / "macgent.log")
 
     # ── Telegram ──────────────────────────────────────────────
     if not config.telegram_bot_token or not config.telegram_chat_id:
@@ -119,22 +103,23 @@ def _setup_workspace(workspace_dir: str):
             shutil.copy2(src, dst)
 
 
-def _setup_logging(log_file: str):
-    """Configure logging: INFO to console, DEBUG to log file (captures everything)."""
+def _setup_logging(log_file: str, debug: bool = False):
+    """Configure logging with INFO by default and DEBUG only when requested."""
     fmt = "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
     root = logging.getLogger()
-    root.setLevel(logging.DEBUG)
+    root.handlers.clear()
+    root.setLevel(logging.DEBUG if debug else logging.INFO)
 
-    # Console: INFO and above
+    # Console: always INFO+ so normal runs stay readable.
     console = logging.StreamHandler()
     console.setLevel(logging.INFO)
     console.setFormatter(logging.Formatter(fmt))
     root.addHandler(console)
 
-    # File: DEBUG and above (LLM calls, actions, responses, errors)
+    # File: INFO+ by default, DEBUG+ only when --debug is passed.
     Path(log_file).parent.mkdir(parents=True, exist_ok=True)
     fh = logging.FileHandler(log_file, encoding="utf-8")
-    fh.setLevel(logging.DEBUG)
+    fh.setLevel(logging.DEBUG if debug else logging.INFO)
     fh.setFormatter(logging.Formatter(fmt))
     root.addHandler(fh)
 
@@ -158,23 +143,25 @@ def main():
     # Copy any missing base template files to the runtime workspace (never overwrites)
     _setup_workspace(config.workspace_dir)
 
+    raw_args = sys.argv[1:]
+    debug_enabled = ("--debug" in raw_args) or (config.get_logging_level() == "DEBUG")
+    cli_args = [a for a in raw_args if a != "--debug"]
+
     # Set up logging (file + console) now that we know the log path
-    _setup_logging(config.log_file)
+    _setup_logging(config.log_file, debug=debug_enabled)
 
     if not config.reasoning_api_key:
-        print("ERROR: Set REASONING_API_KEY in .env file")
+        print("ERROR: Set OPENROUTER_API_KEY (or REASONING_API_KEY) in .env file")
         sys.exit(1)
 
     # Detect legacy mode: if first arg isn't a known subcommand, run worker Agent directly
     SUBCOMMANDS = {"task", "daemon", "status", "log", "answer", "soul", "-h", "--help"}
-    if len(sys.argv) > 1 and sys.argv[1] not in SUBCOMMANDS:
-        task_text = " ".join(sys.argv[1:])
-        from macgent.db import DB
+    if len(cli_args) > 0 and cli_args[0] not in SUBCOMMANDS:
+        task_text = " ".join(cli_args)
         from macgent.memory import MemoryManager
         from macgent.agent import Agent
-        db = DB(config.db_path)
         memory = MemoryManager(config)
-        agent = Agent(config, db=db, memory=memory, task_description=task_text)
+        agent = Agent(config, db=None, memory=memory, task_description=task_text)
         state = agent.run(task_text)
         print(f"\n{'='*60}")
         print(f"Task: {task_text}")
@@ -190,6 +177,7 @@ def main():
 
     import argparse
     parser = argparse.ArgumentParser(prog="macgent", description="macOS automation multi-agent system")
+    parser.add_argument("--debug", action="store_true", help="Enable DEBUG logging (includes LLM prompts/responses).")
     sub = parser.add_subparsers(dest="command")
 
     # macgent task 'do X' — direct CEO task
@@ -216,13 +204,13 @@ def main():
     # macgent soul edit <role> — open soul file in editor
     soul_p = sub.add_parser("soul", help="View or edit soul files")
     soul_p.add_argument("action", choices=["edit", "show"], help="Action")
-    soul_p.add_argument("role", choices=["manager", "worker"], help="Role")
+    soul_p.add_argument("role", choices=["agent"], help="Role")
 
-    args = parser.parse_args()
+    args = parser.parse_args(raw_args)
 
     if args.command is None:
-        print("No subcommand provided. Running one startup heartbeat (bootstrap if needed).")
-        _run_daemon(config, config.daemon_interval, once=True)
+        print("No subcommand provided. Starting daemon mode (continuous).")
+        _run_daemon(config, config.daemon_interval, once=False)
         return
 
     if args.command == "task":
@@ -249,17 +237,15 @@ def main():
 
 def _run_task(config, description: str):
     """Create a CEO task and run it through the Worker."""
-    from macgent.db import DB
     from macgent.memory import MemoryManager
     from macgent.roles.manager import ManagerRole
     from macgent.roles.worker import WorkerRole
     from macgent.actions import notion_actions
 
-    db = DB(config.db_path)
     memory = MemoryManager(config)
 
     # Route through manager LLM to create Notion task
-    manager = ManagerRole(config, db, memory)
+    manager = ManagerRole(config, None, memory)
     page_id = manager.handle_new_ceo_task(description)
     if not page_id:
         print("Failed to create task in Notion.")
@@ -273,7 +259,7 @@ def _run_task(config, description: str):
         return
 
     # Run immediately via worker
-    worker = WorkerRole(config, db, memory)
+    worker = WorkerRole(config, None, memory)
     worker.run_task(task)
 
     # Show final status from Notion
@@ -294,7 +280,6 @@ def _run_daemon(config, interval: int, once: bool = False):
 async def _run_daemon_async(config, interval: int, once: bool):
     """Async daemon that runs Telegram polling alongside the sync heartbeat loop."""
     import asyncio
-    from macgent.db import DB
 
 
     print(f"macgent daemon started (interval={interval}s, Ctrl+C to stop)")
@@ -303,9 +288,7 @@ async def _run_daemon_async(config, interval: int, once: bool):
     telegram_task = None
     if config.telegram_bot_token:
         from macgent.telegram_bot import TelegramBot
-        # Telegram bot needs its own DB connection (different thread)
-        tg_db = DB(config.db_path)
-        bot = TelegramBot(config, tg_db)
+        bot = TelegramBot(config)
         print("✓ Telegram bot enabled — listening on @MacGentBot")
         telegram_task = asyncio.create_task(bot.run_polling())
     else:
@@ -331,17 +314,14 @@ async def _run_daemon_async(config, interval: int, once: bool):
 def _sync_daemon_loop(config, interval, once):
     """Synchronous daemon loop (runs in thread pool while Telegram polls in async)."""
     import time
-    from macgent.db import DB
     from macgent.memory import MemoryManager
     from macgent.roles.manager import ManagerRole
     from macgent.roles.worker import WorkerRole
 
-    # Create DB connection in this thread (SQLite connections are thread-specific)
-    db = DB(config.db_path)
     memory = MemoryManager(config)
 
-    manager = ManagerRole(config, db, memory)
-    worker = WorkerRole(config, db, memory)
+    manager = ManagerRole(config, None, memory)
+    worker = WorkerRole(config, None, memory)
 
     cycle = 0
     try:
@@ -408,28 +388,32 @@ def _show_status(config):
 
 def _show_log(config, n: int):
     """Show recent agent activity."""
-    from macgent.db import DB
-    db = DB(config.db_path)
-    entries = db.get_log(limit=n)
-    if not entries:
+    from pathlib import Path
+
+    path = Path(config.log_file)
+    if not path.exists():
+        print("No log file found.")
+        return
+    lines = path.read_text().splitlines()
+    if not lines:
         print("No log entries.")
         return
-    for e in entries:
-        print(f"  [{e['created_at']}] {e['role']:12s} {e['action']:16s} {(e.get('detail') or '')[:60]}")
+    for line in lines[-max(1, n):]:
+        print(line)
 
 
 def _answer_escalation(config, page_id: str, text: str):
     """Answer a blocked task via CLI."""
-    from macgent.db import DB
     from macgent.actions import notion_actions
+    from macgent import message_bus
 
     task = notion_actions.notion_get(config.notion_token, page_id)
     if not task:
         print(f"Task {page_id} not found in Notion.")
         return
 
-    db = DB(config.db_path)
-    db.send_message("ceo", "manager", page_id, text)
+    message_bus.enqueue_message("ceo", "agent", page_id, text)
+    message_bus.request_wake()
 
     # Find title
     title = ""
@@ -438,13 +422,13 @@ def _answer_escalation(config, page_id: str, text: str):
             title = task[key]
             break
 
-    print(f"Answer queued for '{title or page_id}'. Manager will process it on next heartbeat.")
+    print(f"Answer queued for '{title or page_id}' (in-memory). Manager will process it on next heartbeat.")
 
 
 def _soul_command(config, action: str, role: str):
-    """View or edit soul files (workspace/{role}/soul.md)."""
+    """View or edit soul files (workspace/{role}/SOUL.md)."""
     from pathlib import Path
-    soul_path = Path(config.workspace_dir) / role / "soul.md"
+    soul_path = Path(config.workspace_dir) / role / "SOUL.md"
     if action == "show":
         if soul_path.exists():
             print(soul_path.read_text())

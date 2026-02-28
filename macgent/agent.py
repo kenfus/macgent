@@ -30,25 +30,26 @@ class Agent:
         self.task_id = task_id
         self.reasoning_client = build_text_fallback_client(config)
 
-        # Build full worker soul: soul + skills + memory + semantic recall
+        # Build full agent soul: soul + skills + memory + semantic recall
         if memory and db:
             self.soul = memory.build_context(
-                db, "worker", task_id=task_id, task_description=task_description
+                db, "agent", task_id=task_id, task_description=task_description
             )
-            logger.info("Loaded worker soul via MemoryManager (full context)")
+            logger.info("Loaded agent soul via MemoryManager (full context)")
         else:
-            self.soul = self._load_soul("worker")
+            self.soul = self._load_soul("agent")
 
     def _load_soul(self, role: str) -> str:
-        """Load soul file from workspace/{role}/soul.md."""
+        """Load soul file from workspace/{role}/SOUL.md (fallback: soul.md)."""
         from pathlib import Path
 
         workspace = Path(self.config.workspace_dir)
-        path = workspace / role / "soul.md"
-        if path.exists():
-            logger.info(f"Loaded {role} soul from {path}")
-            return path.read_text()
-        logger.debug(f"No soul file for {role} at {path}")
+        candidates = [workspace / role / "SOUL.md", workspace / role / "soul.md"]
+        for path in candidates:
+            if path.exists():
+                logger.info(f"Loaded {role} soul from {path}")
+                return path.read_text().replace("{{WORKSPACE_DIR}}", str(workspace))
+        logger.debug(f"No soul file for {role} at {candidates[0]}")
         return ""
 
     def run(self, task: str) -> AgentState:

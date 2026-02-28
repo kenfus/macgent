@@ -3,12 +3,12 @@
     "openrouter": {
       "api_base": "https://openrouter.ai/api/v1",
       "api_type": "openai",
-      "api_key_env": "REASONING_API_KEY"
+      "api_key_env": "OPENROUTER_API_KEY"
     },
     "openrouter_vision": {
       "api_base": "https://openrouter.ai/api/v1",
       "api_type": "openai",
-      "api_key_env": "VISION_API_KEY"
+      "api_key_env": "OPENROUTER_API_KEY"
     },
     "kilo": {
       "api_base": "https://api.kilo.ai/v1",
@@ -53,5 +53,8 @@
     "max_retries_per_offer": 2,
     "backoff_seconds": 1.5,
     "backoff_multiplier": 2.0
+  },
+  "logging": {
+    "level": "INFO"
   }
 }

@@ -1,20 +1,18 @@
 """Telegram bot integration for macgent multi-agent system."""
 
 import logging
-from datetime import datetime, timezone
 import httpx
 import asyncio
 
 from macgent.config import Config
-from macgent.db import DB
+from macgent import message_bus
 
 logger = logging.getLogger("macgent.telegram")
 
 
 class TelegramBot:
-    def __init__(self, config: Config, db: DB):
+    def __init__(self, config: Config):
         self.config = config
-        self.db = db
         self.token = config.telegram_bot_token
         self.api_base = f"https://api.telegram.org/bot{self.token}"
         self.offset = 0
@@ -53,7 +51,7 @@ class TelegramBot:
             return []
 
     async def process_message(self, message: dict) -> None:
-        """Route incoming Telegram message to the manager for LLM enhancement."""
+        """Route incoming Telegram message to the agent for LLM enhancement."""
         text = message.get("text", "").strip()
         chat_id = str(message["chat"]["id"])
         user_id = message["from"]["id"]
@@ -64,30 +62,19 @@ class TelegramBot:
 
         logger.info(f"Active task from {user_name} (ID {user_id}): {text[:80]}")
 
-        # Store as CEO → manager message so manager's LLM flow handles it:
-        # enhance → clarify if needed → create Notion task as "Ready" → spawn worker
-        self.db.send_message("ceo", "manager", task_id=None, content=text)
+        # Store as CEO → agent message for FIFO processing.
+        message_bus.enqueue_message("ceo", "agent", task_id=None, content=text)
 
-        # Wake the manager immediately for active task processing
+        # Wake the agent loop immediately for active task processing.
         self._wake_manager()
 
-        # Brief acknowledgment — manager will send the real response via Telegram
-        await self.send_message(chat_id, "On it! I'll get back to you shortly.")
-        logger.info(f"Queued CEO message for manager processing")
+        # Brief acknowledgment — agent will send the real response via Telegram
+        logger.info("Queued CEO message for agent processing")
 
     def _wake_manager(self) -> None:
         """Signal the manager to wake up and process this task immediately."""
-        try:
-            from datetime import datetime, timezone
-            timestamp = datetime.now(timezone.utc).isoformat()
-            self.db.conn.execute(
-                "INSERT OR REPLACE INTO monitor_state (source, last_check, metadata) VALUES (?, ?, ?)",
-                ("_wake_request", timestamp, "Woken by Telegram message")
-            )
-            self.db.conn.commit()
-            logger.info("Manager wake signal sent")
-        except Exception as e:
-            logger.error(f"Failed to send wake signal: {e}")
+        message_bus.request_wake()
+        logger.info("Manager wake signal sent")
 
     async def handle_callback_query(self, query: dict) -> None:
         """Handle inline buttons/callbacks from Telegram."""

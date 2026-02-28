@@ -10,7 +10,7 @@ MACGENT_DIR = Path.home() / ".macgent"
 
 @dataclass
 class Config:
-    # Agent identity
+    # Agent identity (used only as fallback before identity.md exists)
     macgent_name: str = "MacGent"
 
     # Reasoning model (text-only) — defaults to free OpenRouter models
@@ -79,7 +79,6 @@ class Config:
     notion_database_id: str = ""
 
     # Paths
-    db_path: str = ""
     workspace_dir: str = ""
     log_file: str = ""
     faiss_path: str = ""
@@ -110,22 +109,26 @@ class Config:
     @classmethod
     def from_env(cls) -> "Config":
         macgent_dir = Path(os.getenv("MACGENT_DIR", str(MACGENT_DIR)))
-        repo_workspace = Path(__file__).parent.parent / "workspace"
+        repo_root = Path(__file__).parent.parent
+        repo_workspace = repo_root / "workspace"
         default_workspace = str(repo_workspace)
-        default_log = str(repo_workspace / "macgent.log")
+        default_log = str(repo_root / "logs" / "macgent.log")
+        openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
+        reasoning_key = os.getenv("REASONING_API_KEY", openrouter_key)
+        vision_key = os.getenv("VISION_API_KEY", openrouter_key or reasoning_key)
 
         default_cfg_path = str(Path.cwd() / "macgent_config.json")
         cfg_path = os.getenv("MACGENT_CONFIG_PATH", default_cfg_path)
         model_cfg = cls._load_model_config(cfg_path)
 
         return cls(
-            macgent_name=os.getenv("MACGENT_NAME", cls.macgent_name),
+            macgent_name=cls.macgent_name,
             reasoning_api_base=os.getenv("REASONING_API_BASE", cls.reasoning_api_base),
-            reasoning_api_key=os.getenv("REASONING_API_KEY", ""),
+            reasoning_api_key=reasoning_key,
             reasoning_model=os.getenv("REASONING_MODEL", cls.reasoning_model),
             reasoning_api_type=os.getenv("REASONING_API_TYPE", cls.reasoning_api_type),
             vision_api_base=os.getenv("VISION_API_BASE", cls.vision_api_base),
-            vision_api_key=os.getenv("VISION_API_KEY", ""),
+            vision_api_key=vision_key,
             vision_model=os.getenv("VISION_MODEL", cls.vision_model),
             vision_api_type=os.getenv("VISION_API_TYPE", cls.vision_api_type),
             text_model_primary=os.getenv(
@@ -168,9 +171,8 @@ class Config:
             telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
             notion_token=os.getenv("NOTION_TOKEN", ""),
             notion_database_id=os.getenv("NOTION_PLANNING_DATABASE_ID", ""),
-            db_path=os.getenv("MACGENT_DB_PATH", str(macgent_dir / "macgent.db")),
-            workspace_dir=os.getenv("MACGENT_WORKSPACE_DIR", default_workspace),
-            log_file=os.getenv("MACGENT_LOG_FILE", default_log),
+            workspace_dir=default_workspace,
+            log_file=default_log,
             faiss_path=os.getenv("MACGENT_FAISS_PATH", str(macgent_dir / "memory.faiss")),
             memories_dir=os.getenv("MACGENT_MEMORIES_DIR", str(macgent_dir / "memories")),
             memory_recent_days=int(os.getenv("MEMORY_RECENT_DAYS", str(cls.memory_recent_days))),
@@ -224,3 +226,10 @@ class Config:
 
     def get_offer_definition(self, alias: str, modality: str) -> dict[str, Any] | None:
         return self.model_config.get("offers", {}).get(modality, {}).get(alias)
+
+    def get_logging_level(self) -> str:
+        level = os.getenv("MACGENT_LOG_LEVEL", self.model_config.get("logging", {}).get("level", "INFO"))
+        level = str(level or "INFO").upper()
+        if level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+            return "INFO"
+        return level

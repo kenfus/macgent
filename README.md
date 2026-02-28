@@ -34,6 +34,28 @@ cp macgent_config.json.example macgent_config.json
 
 In `.env`, set API keys and `MACGENT_CONFIG_PATH`. In `macgent_config.json`, set primary/fallback text and vision model aliases.
 
+Routing structure is:
+- `providers`: API endpoint + auth env var (`api_key_env`)
+- `offers`: model aliases per modality (`text` / `vision`) mapped to a provider + model id
+- `routes`: `primary` + ordered `fallbacks` aliases for each modality
+
+Minimal pattern:
+```json
+{
+  "providers": {
+    "openrouter": {"api_base": "https://openrouter.ai/api/v1", "api_type": "openai", "api_key_env": "OPENROUTER_API_KEY"}
+  },
+  "offers": {
+    "text": {"fast_text": {"provider": "openrouter", "model": "qwen/qwen3-coder:free"}},
+    "vision": {"fast_vision": {"provider": "openrouter", "model": "nvidia/nemotron-nano-12b-v2-vl:free"}}
+  },
+  "routes": {
+    "text": {"primary": "fast_text", "fallbacks": []},
+    "vision": {"primary": "fast_vision", "fallbacks": []}
+  }
+}
+```
+
 ### First Task
 
 Run first-time setup + bootstrap heartbeat:
@@ -42,7 +64,7 @@ Run first-time setup + bootstrap heartbeat:
 uv run macgent
 ```
 
-The setup wizard asks for agent name + workspace path, copies templates from `macgent/workspace/`, then runs one startup heartbeat (`bootstrap.md` on first run).
+The setup wizard configures Telegram (if needed), copies templates from `macgent/workspace/`, then runs one startup heartbeat (`bootstrap.md` on first run).
 
 Run macgent with a simple task:
 
@@ -103,7 +125,6 @@ Available capabilities agents can use:
 - **[Browser Agent](./macgent/skills/browser-agent.md)** — Primary browser-task delegation runtime
 - **[Email Operations](./macgent/skills/email_operations.md)** — Read/send emails via Mail app
 - **[Calendar](./macgent/skills/calendar_operations.md)** — Read events and check availability
-- **[iMessages](./macgent/skills/messages.md)** — Send/read iMessages
 - **[AppleScript](./macgent/skills/applescript.md)** — Control macOS applications
 - **[JavaScript](./macgent/skills/javascript.md)** — Extract data from web pages
 - **[Evaluate Image](./macgent/skills/evaluate_image.md)** — Vision fallback for non-multimodal text models
@@ -304,7 +325,7 @@ macgent/
 ├── roles/            # Manager, Worker, Stakeholder agent implementations
 ├── prompts/          # System prompts and context builders
 ├── memory.py         # File-based memory context + semantic recall
-├── db.py             # Database (messages, monitor state, logs)
+├── message_bus.py    # In-memory FIFO messaging + wake signal
 └── agent.py          # Single-agent orchestrator
 
 skills/              # Documentation of available skills
@@ -315,7 +336,7 @@ examples/            # Example scripts to run
 
 ## Troubleshooting
 
-### "ERROR: Set REASONING_API_KEY in .env file"
+### "ERROR: Set OPENROUTER_API_KEY (or REASONING_API_KEY) in .env file"
 Add your LLM API key to `.env` and ensure it's loaded.
 
 ### Agent seems stuck
@@ -363,8 +384,10 @@ uv run macgent soul edit worker
 Enable verbose logging:
 
 ```bash
-LOGLEVEL=DEBUG uv run macgent 'Your task'
+uv run macgent --debug 'Your task'
 ```
+
+With `--debug`, logs include LLM prompt payloads, selected model aliases, and model responses.
 
 ### Running Tests
 

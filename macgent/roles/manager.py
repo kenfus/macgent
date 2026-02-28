@@ -11,6 +11,7 @@ import logging
 from pathlib import Path
 
 from macgent.actions.dispatcher import dispatch, set_dispatch_config
+from macgent import message_bus
 from macgent.models import Action
 from macgent.roles.base import BaseRole
 
@@ -19,36 +20,31 @@ MAX_TURNS = 15
 
 
 class ManagerRole(BaseRole):
-    role_name = "manager"
+    role_name = "agent"
 
     def __init__(self, config, db, memory):
         super().__init__(config, db, memory)
         set_dispatch_config(config)
 
     def _is_bootstrapped(self) -> bool:
-        base = Path(self.config.workspace_dir) / "manager"
-        return (base / "identity.md").exists() or (base / "IDENTITY.md").exists()
+        base = Path(self.config.workspace_dir) / "agent"
+        return (base / "IDENTITY.md").exists() or (base / "identity.md").exists()
 
     def should_wake_early(self) -> bool:
-        row = self.db.conn.execute(
-            "SELECT metadata FROM monitor_state WHERE source = ?",
-            ("_wake_request",),
-        ).fetchone()
-        return bool(row)
+        return message_bus.should_wake()
 
     def clear_wake_request(self):
-        self.db.conn.execute("DELETE FROM monitor_state WHERE source = ?", ("_wake_request",))
-        self.db.conn.commit()
+        message_bus.clear_wake()
 
     def _load_manager_task_prompt(self) -> str:
-        manager_dir = Path(self.config.workspace_dir) / "manager"
+        manager_dir = Path(self.config.workspace_dir) / "agent"
         if not self._is_bootstrapped():
-            p = manager_dir / "bootstrap.md"
+            p = manager_dir / "BOOTSTRAP.md"
             if p.exists():
                 return p.read_text()
-            return "Bootstrap missing. Create manager/identity.md, then continue with heartbeat."
+            return "Bootstrap missing. Create agent/IDENTITY.md, then continue with heartbeat."
 
-        p = manager_dir / "heartbeat.md"
+        p = manager_dir / "HEARTBEAT.md"
         if p.exists():
             return p.read_text()
         return "Run manager heartbeat based on current board/messages and respond HEARTBEAT_OK if nothing to do."
@@ -56,22 +52,29 @@ class ManagerRole(BaseRole):
     def tick(self) -> bool:
         logger.info("Manager tick starting")
 
-        if self.should_wake_early():
+        is_active_wake = self.should_wake_early()
+        if is_active_wake:
             self.clear_wake_request()
 
+        ceo_message = None
+        # Only active wake cycles consume Telegram queue messages.
+        if is_active_wake:
+            ceo_message = message_bus.dequeue_message("agent", from_role="ceo")
+            if ceo_message:
+                logger.info("Manager loaded 1 CEO message from queue (id=%s)", ceo_message.get("id"))
+            else:
+                logger.info("Active wake received but no queued CEO message found")
+
         system = self.get_system_prompt()
-        prompt = self._load_manager_task_prompt()
-
-        # Feed unread CEO messages as context; LLM decides what to do.
-        ceo_messages = self.db.get_unread_messages("manager")
-        ceo_texts = [m["content"] for m in ceo_messages if m.get("from_role") == "ceo"]
-        if ceo_messages:
-            self.db.mark_messages_read("manager")
-
-        if ceo_texts:
-            prompt += "\n\n## CEO Messages\n"
-            for i, t in enumerate(ceo_texts, 1):
-                prompt += f"\n{i}. {t}\n"
+        if ceo_message:
+            prompt = (
+                "Process this CEO message now. Execute actions as needed. "
+                "When fully handled, respond HEARTBEAT_OK.\n\n"
+                "## CEO Message\n\n"
+                f"{ceo_message['content']}\n"
+            )
+        else:
+            prompt = self._load_manager_task_prompt()
 
         conversation = [{"role": "user", "content": prompt}]
         did_work = False
