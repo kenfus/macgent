@@ -49,7 +49,7 @@ class ManagerRole(BaseRole):
         p = manager_dir / "HEARTBEAT.md"
         if p.exists():
             return p.read_text()
-        return "Run manager heartbeat based on current board/messages and respond HEARTBEAT_OK if nothing to do."
+        return "Run manager heartbeat based on current board/messages and respond with heartbeat_ok if nothing to do."
 
     def tick(self) -> bool:
         logger.info("Manager tick starting")
@@ -59,27 +59,29 @@ class ManagerRole(BaseRole):
         if is_active_wake:
             self.clear_wake_request()
 
+        # Dequeue CEO messages on any active wake — including during bootstrap.
         ceo_message = None
-        # Only active wake cycles consume Telegram queue messages.
-        if is_active_wake and bootstrapped:
+        if is_active_wake:
             ceo_message = message_bus.dequeue_message("agent", from_role="ceo")
             if ceo_message:
                 logger.info("Manager loaded 1 CEO message from queue (id=%s)", ceo_message.get("id"))
+                self.memory.append_to_daily_memory(f"[CEO via Telegram] {ceo_message['content']}")
             else:
                 logger.info("Active wake received but no queued CEO message found")
-        elif is_active_wake and not bootstrapped:
-            logger.info("Active wake ignored during bootstrap-only mode")
 
         # All modes share the same full context (soul + skills + memory).
         # Only the user prompt differs: BOOTSTRAP.md, HEARTBEAT.md, or a CEO message.
         system = self.get_system_prompt()
         if not bootstrapped:
             prompt = self._load_manager_task_prompt()
+            if ceo_message:
+                # Append the human's reply so the agent can act on it within bootstrap.
+                prompt += f"\n\n## CEO Reply\n\n{ceo_message['content']}\n"
         else:
             if ceo_message:
                 prompt = (
                     "Process this CEO message now. Execute actions as needed. "
-                    "When fully handled, respond HEARTBEAT_OK.\n\n"
+                    'When fully handled, finish with {"type": "finish"}.\n\n'
                     "## CEO Message\n\n"
                     f"{ceo_message['content']}\n"
                 )
@@ -101,17 +103,14 @@ class ManagerRole(BaseRole):
                 logger.debug("Manager returned non-JSON; stopping tick")
                 break
 
-            if data.get("type") == "heartbeat_ok":
-                return did_work
+            is_done = data.get("type") in ("heartbeat_ok", "finish")
 
             actions = data.get("actions", [])
             if not actions and "action" in data:
                 actions = [data["action"]]
-            if not actions and "type" in data:
+            # Only treat the root object as a single action if it isn't a control signal
+            if not actions and "type" in data and not is_done:
                 actions = [data]
-
-            if not actions:
-                break
 
             results = []
             for a in actions:
@@ -121,11 +120,18 @@ class ManagerRole(BaseRole):
                 results.append(f"[{a_type}] {result}")
                 did_work = True
 
+            # If the LLM combined actions + done signal, honour both
+            if is_done:
+                return did_work
+
+            if not actions:
+                break
+
             conversation.append({"role": "assistant", "content": response})
             conversation.append(
                 {
                     "role": "user",
-                    "content": "Action results:\n" + "\n".join(results) + "\n\nContinue or respond HEARTBEAT_OK.",
+                    "content": "Action results:\n" + "\n".join(results) + "\n\nContinue.",
                 }
             )
 
@@ -188,6 +194,7 @@ class ManagerRole(BaseRole):
                 from macgent.telegram_bot import sync_send_message
 
                 sync_send_message(self.config, text)
+                self.memory.append_to_daily_memory(f"[Agent via Telegram] {text}")
                 return f"Telegram sent: {text[:120]}"
             except Exception as e:
                 return f"ERROR: send_telegram failed: {e}"

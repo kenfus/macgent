@@ -167,6 +167,11 @@ def _setup_logging(log_file: str, debug: bool = False):
     fh.setFormatter(logging.Formatter(fmt))
     root.addHandler(fh)
 
+    # Suppress noisy third-party HTTP loggers unless debugging.
+    if not debug:
+        for noisy in ("httpx", "httpcore"):
+            logging.getLogger(noisy).setLevel(logging.WARNING)
+
 
 def _resolve_daily_log_path(log_file: str) -> str:
     """Return a date-stamped log path, e.g. logs/macgent-YYYY-MM-DD.log."""
@@ -379,28 +384,15 @@ def _sync_daemon_loop(config, interval, once):
     manager = ManagerRole(config, None, memory)
     worker = WorkerRole(config, None, memory)
 
-    cycle = 0
     try:
         while True:
-            cycle += 1
-            print(f"\n{'='*60}")
-            print(f"Heartbeat cycle #{cycle}")
-            print(f"{'='*60}")
-
-            # 1. Manager: passive heartbeat check
-            #    Returns True if something actionable happened, False = HEARTBEAT_OK
-            active = manager.tick()
-
-            # 2. Worker: always check for pending tasks regardless of manager result
-            #    (there may be tasks pending from before this cycle)
+            manager.tick()
             worker.tick()
 
             if once:
-                print("\n--once flag set, exiting after one cycle.")
                 break
 
-            # Sleep with early wake support for passive notifications (Telegram, Slack, etc.)
-            print(f"\nSleeping {interval}s until next heartbeat (or until external wake signal)...")
+            # Sleep with early wake support for active Telegram messages.
             sleep_start = time.time()
             while True:
                 elapsed = time.time() - sleep_start

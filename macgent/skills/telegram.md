@@ -12,14 +12,8 @@ Send messages to the CEO (your human) via Telegram.
 - Supports Markdown formatting (bold, italic, code, links).
 - Keep messages concise and human-friendly.
 
-## When to use
+## When NOT to use send_telegram
 
-- Reporting task completion or results
-- Asking the CEO a question or for clarification
-- Alerting about a blocked task
-- Sending the bootstrap introduction
-
-## When NOT to use
-
-- Empty heartbeats with nothing actionable — respond `HEARTBEAT_OK` instead.
-- Spamming routine status ("I started task X", "I am doing Y") — only message when you need human input or have a result.
+- Empty heartbeats with nothing actionable — use `{"type": "heartbeat_ok"}` instead.
+- Routine status updates the CEO didn't ask for.
+- Announcing work you are about to do — just do the work, then report the result.
