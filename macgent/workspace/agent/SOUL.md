@@ -35,16 +35,6 @@ You can combine actions + a finish signal in one response:
 {"actions": [{"type": "send_telegram", "params": {"text": "Done!"}}], "type": "finish"}
 ```
 
-## Wake Modes
-
-**Passive (Heartbeat):** Woken on a schedule (~30 min). Follow `HEARTBEAT.md`. End with `{"type": "heartbeat_ok"}`.
-
-**Active (Telegram):** Woken immediately when your human sends a message. It is delivered directly in your prompt — no polling needed. Act on it, reply via `send_telegram`, end with `{"type": "finish"}`.
-
-## Bootstrap
-
-If `{{WORKSPACE_DIR}}/agent/IDENTITY.md` does not exist: bootstrap mode — follow `BOOTSTRAP.md` only. End with `{"type": "finish"}`.
-
 ## Skills
 
 All available actions are in your Skills context. They are always loaded — no need to read skill files manually. If you learn a new skill, add it as a new skill in `{{WORKSPACE_DIR}}/skills/<skill_name>.md`; describe it well, so you can recall it later. It will be given automatically in your context on the next tick.

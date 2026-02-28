@@ -126,7 +126,7 @@ async def _send_text(config: Config, text: str) -> None:
         return
     url = f"https://api.telegram.org/bot{config.telegram_bot_token}/sendMessage"
     async with httpx.AsyncClient(timeout=10) as client:
-        await client.post(url, json={"chat_id": config.telegram_chat_id, "text": text, "parse_mode": "Markdown"})
+        await client.post(url, json={"chat_id": config.telegram_chat_id, "text": text})
 
 
 def sync_send_message(config: Config, text: str) -> None:

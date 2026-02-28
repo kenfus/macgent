@@ -299,23 +299,23 @@ class FallbackLLMClient:
                 "LLM_PROMPT_BEGIN",
                 f"alias: {offer.alias}",
                 f"model: {offer.model}",
-                f"api_base: {offer.api_base}",
-                f"api_type: {offer.api_type}",
                 "",
-                "## SYSTEM",
+                "━━━ CONTEXT (system) ━━━",
                 "",
                 (system or "(empty)"),
-                "",
-                "## MESSAGES",
             ]
-            for idx, msg in enumerate(messages, 1):
+            # First message = task prompt (bootstrap / heartbeat / CEO message)
+            if messages:
+                first = messages[0]
+                content = first.get("content", "")
+                rendered = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, indent=2)
+                lines.extend(["", "━━━ TASK ━━━", "", rendered])
+            # Remaining messages = multi-turn conversation (action results injected by orchestrator)
+            for idx, msg in enumerate(messages[1:], 1):
                 role = msg.get("role", "?")
                 content = msg.get("content", "")
-                if isinstance(content, str):
-                    rendered = content
-                else:
-                    rendered = json.dumps(content, ensure_ascii=False, indent=2)
-                lines.extend(["", f"### Message {idx} ({role})", "", rendered])
+                rendered = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, indent=2)
+                lines.extend(["", f"━━━ TURN {idx} ({role}) ━━━", "", rendered])
             lines.extend(["", "LLM_PROMPT_END"])
             logger.debug("\n".join(lines))
         else:

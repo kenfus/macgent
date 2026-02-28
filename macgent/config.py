@@ -74,10 +74,6 @@ class Config:
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
 
-    # Notion
-    notion_token: str = ""
-    notion_database_id: str = ""
-
     # Paths
     workspace_dir: str = ""
     log_file: str = ""
@@ -179,8 +175,6 @@ class Config:
             stale_task_minutes=int(os.getenv("STALE_TASK_MINUTES", str(cls.stale_task_minutes))),
             telegram_bot_token=tg_token_from_env or tg_token_from_cfg,
             telegram_chat_id=tg_chat_from_env or tg_chat_from_cfg,
-            notion_token=os.getenv("NOTION_TOKEN", ""),
-            notion_database_id=os.getenv("NOTION_PLANNING_DATABASE_ID", ""),
             workspace_dir=workspace_from_cfg or default_workspace,
             log_file=log_from_cfg or default_log,
             faiss_path=os.getenv("MACGENT_FAISS_PATH", str(macgent_dir / "memory.faiss")),

@@ -39,14 +39,24 @@ After each action batch, you receive the results before continuing. Use them:
 - Use returned data (IDs, content, status) in subsequent actions.
 - You do not need to re-read files you just wrote — trust the result.
 
-## When to Stop
+## Control Signals
 
 | Signal | When to use |
 |---|---|
+| `{"type": "wait_for_results"}` | More work to do — execute these actions and bring me back with results |
 | `{"type": "heartbeat_ok"}` | Passive wakeup — checked everything, nothing to do |
 | `{"type": "finish"}` | Active task or bootstrap — work is done, human notified |
 
-Combine actions with a finish in one response when the last action IS the completion:
+Use `wait_for_results` when you need to do work across multiple steps:
+```json
+{"actions": [{"type": "write_file", "params": {"path": "skills/notion.md", "content": "..."}}], "type": "wait_for_results"}
+```
+Orchestrator injects `[write_file] OK` and calls you again. Then:
+```json
+{"actions": [{"type": "send_telegram", "params": {"text": "Notion skill created!"}}], "type": "finish"}
+```
+
+Combine actions with `finish` when the last action IS the completion:
 ```json
 {"actions": [{"type": "send_telegram", "params": {"text": "Done!"}}], "type": "finish"}
 ```

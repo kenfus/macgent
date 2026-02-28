@@ -241,26 +241,14 @@ def main():
     parser.add_argument("--debug", action="store_true", help="Enable DEBUG logging (includes LLM prompts/responses).")
     sub = parser.add_subparsers(dest="command")
 
-    # macgent task 'do X' — direct CEO task
-    task_p = sub.add_parser("task", help="Create and run a task via Manager + Worker")
-    task_p.add_argument("description", nargs="+", help="Task description")
-
     # macgent daemon — start heartbeat loop
     daemon_p = sub.add_parser("daemon", help="Start the manager heartbeat daemon")
     daemon_p.add_argument("--once", action="store_true", help="Run one cycle then exit")
     daemon_p.add_argument("--interval", type=int, default=None, help="Heartbeat interval in seconds")
 
-    # macgent status — show tasks
-    sub.add_parser("status", help="Show tasks from the database")
-
     # macgent log — show agent activity
     log_p = sub.add_parser("log", help="Show agent activity log")
     log_p.add_argument("-n", type=int, default=20, help="Number of entries")
-
-    # macgent answer <page_id> 'text' — answer a blocked task
-    answer_p = sub.add_parser("answer", help="Answer a blocked task")
-    answer_p.add_argument("page_id", help="Notion page ID of the blocked task")
-    answer_p.add_argument("text", nargs="+", help="Answer text")
 
     # macgent soul edit <role> — open soul file in editor
     soul_p = sub.add_parser("soul", help="View or edit soul files")
@@ -274,62 +262,15 @@ def main():
         _run_daemon(config, config.daemon_interval, once=False)
         return
 
-    if args.command == "task":
-        description = " ".join(args.description)
-        _run_task(config, description)
-
-    elif args.command == "daemon":
+    if args.command == "daemon":
         interval = args.interval or config.daemon_interval
         _run_daemon(config, interval, once=args.once)
-
-    elif args.command == "status":
-        _show_status(config)
 
     elif args.command == "log":
         _show_log(config, args.n)
 
-    elif args.command == "answer":
-        text = " ".join(args.text)
-        _answer_escalation(config, args.page_id, text)
-
     elif args.command == "soul":
         _soul_command(config, args.action, args.role)
-
-
-def _run_task(config, description: str):
-    """Create a CEO task and run it through the Worker."""
-    from macgent.memory import MemoryManager
-    from macgent.roles.manager import ManagerRole
-    from macgent.roles.worker import WorkerRole
-    from macgent.actions import notion_actions
-
-    memory = MemoryManager(config)
-
-    # Route through manager LLM to create Notion task
-    manager = ManagerRole(config, None, memory)
-    page_id = manager.handle_new_ceo_task(description)
-    if not page_id:
-        print("Failed to create task in Notion.")
-        return
-    print(f"Created task in Notion: {description}")
-
-    # Get the created task
-    task = notion_actions.notion_get(config.notion_token, page_id)
-    if not task:
-        print("Could not retrieve created task.")
-        return
-
-    # Run immediately via worker
-    worker = WorkerRole(config, None, memory)
-    worker.run_task(task)
-
-    # Show final status from Notion
-    task = notion_actions.notion_get(config.notion_token, page_id)
-    if task:
-        print(f"\nFinal status: {task.get('Status', '?')}")
-        notes = task.get("Notes", "")
-        if notes:
-            print(f"Notes: {notes}")
 
 
 def _run_daemon(config, interval: int, once: bool = False):
@@ -377,17 +318,13 @@ def _sync_daemon_loop(config, interval, once):
     import time
     from macgent.memory import MemoryManager
     from macgent.roles.manager import ManagerRole
-    from macgent.roles.worker import WorkerRole
 
     memory = MemoryManager(config)
-
     manager = ManagerRole(config, None, memory)
-    worker = WorkerRole(config, None, memory)
 
     try:
         while True:
             manager.tick()
-            worker.tick()
 
             if once:
                 break
@@ -406,34 +343,6 @@ def _sync_daemon_loop(config, interval, once):
         print("\nDaemon stopped.")
 
 
-def _show_status(config):
-    """Show tasks from the Notion board."""
-    from macgent.actions import notion_actions
-
-    tasks = notion_actions.notion_query(config.notion_token, config.notion_database_id)
-    if not tasks:
-        print("No tasks on the Notion board.")
-        return
-    for t in tasks:
-        # Find title, status, priority from whatever property names exist
-        title = ""
-        status = ""
-        priority = ""
-        notes = ""
-        for key, val in t.items():
-            if key in ("Task Name", "Name", "Title") and val:
-                title = val
-            if key == "Status" and val:
-                status = val
-            if key == "Priority" and val:
-                priority = val
-            if key == "Notes" and val:
-                notes = val
-        print(f"  [{status or '?'}] ({priority or '?'}) {title or t.get('page_id', '?')[:20]}")
-        if notes:
-            print(f"      Notes: {notes[:80]}")
-
-
 def _show_log(config, n: int):
     """Show recent agent activity."""
     from pathlib import Path
@@ -448,29 +357,6 @@ def _show_log(config, n: int):
         return
     for line in lines[-max(1, n):]:
         print(line)
-
-
-def _answer_escalation(config, page_id: str, text: str):
-    """Answer a blocked task via CLI."""
-    from macgent.actions import notion_actions
-    from macgent import message_bus
-
-    task = notion_actions.notion_get(config.notion_token, page_id)
-    if not task:
-        print(f"Task {page_id} not found in Notion.")
-        return
-
-    message_bus.enqueue_message("ceo", "agent", page_id, text)
-    message_bus.request_wake()
-
-    # Find title
-    title = ""
-    for key in ("Task Name", "Name", "Title"):
-        if key in task and task[key]:
-            title = task[key]
-            break
-
-    print(f"Answer queued for '{title or page_id}' (in-memory). Manager will process it on next heartbeat.")
 
 
 def _soul_command(config, action: str, role: str):

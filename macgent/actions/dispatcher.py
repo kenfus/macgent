@@ -13,16 +13,14 @@ from macgent.reasoning.llm_client import build_vision_fallback_client
 logger = logging.getLogger("macgent.dispatcher")
 
 # Config reference — set by the role before spawning an Agent
-_dispatch_config = {"notion_token": "", "notion_database_id": "", "workspace_dir": ""}
+_dispatch_config = {"workspace_dir": ""}
 
 # Core skills are shipped inside the package (browser, macos, communication) — fixed
 _CORE_SKILLS_DIR = Path(__file__).parent.parent / "skills"
 
 
 def set_dispatch_config(config):
-    """Set config for dispatcher actions (Notion token, database ID, workspace dir, LLM)."""
-    _dispatch_config["notion_token"] = getattr(config, "notion_token", "")
-    _dispatch_config["notion_database_id"] = getattr(config, "notion_database_id", "")
+    """Set config for dispatcher actions (workspace dir, LLM)."""
     _dispatch_config["workspace_dir"] = getattr(config, "workspace_dir", "")
     _dispatch_config["reasoning_model"] = getattr(config, "reasoning_model", "")
     _dispatch_config["reasoning_api_key"] = getattr(config, "reasoning_api_key", "")
@@ -388,53 +386,6 @@ def dispatch(action: Action) -> str:
             path.unlink()
             logger.info(f"File deleted: {rel}")
             return f"Deleted: {rel}"
-
-        # ── Notion (generic) ──
-
-        elif t == "notion_query":
-            from macgent.actions import notion_actions
-            token = _dispatch_config["notion_token"]
-            db_id = _dispatch_config["notion_database_id"]
-            result = notion_actions.notion_query(
-                token, db_id,
-                filter=p.get("filter"),
-                sorts=p.get("sorts"),
-                page_size=int(p.get("page_size", 50)),
-            )
-            return json.dumps(result, default=str)
-
-        elif t == "notion_get":
-            from macgent.actions import notion_actions
-            token = _dispatch_config["notion_token"]
-            page_id = p.get("page_id", "")
-            result = notion_actions.notion_get(token, page_id)
-            return json.dumps(result, default=str) if result else "ERROR: Page not found"
-
-        elif t == "notion_update":
-            from macgent.actions import notion_actions
-            token = _dispatch_config["notion_token"]
-            page_id = p.get("page_id", "")
-            properties = p.get("properties", {})
-            if not page_id or not properties:
-                return "ERROR: notion_update needs 'page_id' and 'properties'"
-            ok = notion_actions.notion_update(token, page_id, properties)
-            return "Notion page updated" if ok else "ERROR: Notion update failed"
-
-        elif t == "notion_create":
-            from macgent.actions import notion_actions
-            token = _dispatch_config["notion_token"]
-            db_id = _dispatch_config["notion_database_id"]
-            properties = p.get("properties", {})
-            if not properties:
-                return "ERROR: notion_create needs 'properties'"
-            page_id = notion_actions.notion_create(token, db_id, properties)
-            return json.dumps({"page_id": page_id}) if page_id else "ERROR: Notion create failed"
-
-        elif t == "notion_schema":
-            from macgent.actions import notion_actions
-            token = _dispatch_config["notion_token"]
-            db_id = _dispatch_config["notion_database_id"]
-            return notion_actions.notion_schema(token, db_id)
 
         elif t == "browser_task":
             # Delegate a full browsing task to browser-use (Playwright-based).

@@ -6,7 +6,7 @@ Python only provides context, executes returned actions, and handles loop contro
 
 from __future__ import annotations
 
-import json
+import datetime
 import logging
 from pathlib import Path
 
@@ -65,7 +65,8 @@ class ManagerRole(BaseRole):
             ceo_message = message_bus.dequeue_message("agent", from_role="ceo")
             if ceo_message:
                 logger.info("Manager loaded 1 CEO message from queue (id=%s)", ceo_message.get("id"))
-                self.memory.append_to_daily_memory(f"[CEO via Telegram] {ceo_message['content']}")
+                ts = datetime.datetime.now().strftime("%H:%M")
+                self.memory.append_to_daily_memory(f"**[{ts}] CEO:**\n{ceo_message['content']}\n")
             else:
                 logger.info("Active wake received but no queued CEO message found")
 
@@ -104,12 +105,13 @@ class ManagerRole(BaseRole):
                 break
 
             is_done = data.get("type") in ("heartbeat_ok", "finish")
+            is_continue = data.get("type") == "wait_for_results"
 
             actions = data.get("actions", [])
             if not actions and "action" in data:
                 actions = [data["action"]]
-            # Only treat the root object as a single action if it isn't a control signal
-            if not actions and "type" in data and not is_done:
+            # Only treat the root object as a single action if it isn't a control/continue signal
+            if not actions and "type" in data and not is_done and not is_continue:
                 actions = [data]
 
             results = []
@@ -124,7 +126,8 @@ class ManagerRole(BaseRole):
             if is_done:
                 return did_work
 
-            if not actions:
+            # Break only if no actions AND no explicit continue signal
+            if not actions and not is_continue:
                 break
 
             conversation.append({"role": "assistant", "content": response})
@@ -137,54 +140,6 @@ class ManagerRole(BaseRole):
 
         return did_work
 
-    def handle_new_ceo_task(self, task_text: str) -> str | None:
-        """Ask manager LLM to create a Notion task from a direct CLI request."""
-        system = self.get_system_prompt(task_description=task_text)
-        prompt = (
-            "Create a Notion task from this CEO request. "
-            "Use notion_create and include clear title/description/priority fields based on board schema.\n\n"
-            f"CEO request: {task_text}"
-        )
-        conversation = [{"role": "user", "content": prompt}]
-
-        for _ in range(6):
-            try:
-                response = self.call_llm(conversation, system=system, max_tokens=2048)
-            except Exception as e:
-                logger.error("Manager LLM call failed: %s", e)
-                return None
-
-            data = self.parse_json(response)
-            if not data:
-                return None
-
-            actions = data.get("actions", [])
-            if not actions and "action" in data:
-                actions = [data["action"]]
-            if not actions and "type" in data:
-                actions = [data]
-
-            if not actions:
-                return None
-
-            results = []
-            for a in actions:
-                a_type = a.get("type", "")
-                params = a.get("params", {})
-                out = self._execute_action(a_type, params)
-                results.append(f"[{a_type}] {out}")
-
-                if a_type == "notion_create" and "page_id" in out:
-                    try:
-                        return json.loads(out).get("page_id")
-                    except Exception:
-                        pass
-
-            conversation.append({"role": "assistant", "content": response})
-            conversation.append({"role": "user", "content": "Results:\n" + "\n".join(results)})
-
-        return None
-
     def _execute_action(self, action_type: str, params: dict) -> str:
         if action_type == "send_telegram":
             text = params.get("text", params.get("message", ""))
@@ -194,7 +149,8 @@ class ManagerRole(BaseRole):
                 from macgent.telegram_bot import sync_send_message
 
                 sync_send_message(self.config, text)
-                self.memory.append_to_daily_memory(f"[Agent via Telegram] {text}")
+                ts = datetime.datetime.now().strftime("%H:%M")
+                self.memory.append_to_daily_memory(f"**[{ts}] Agent:**\n{text}\n")
                 return f"Telegram sent: {text[:120]}"
             except Exception as e:
                 return f"ERROR: send_telegram failed: {e}"
