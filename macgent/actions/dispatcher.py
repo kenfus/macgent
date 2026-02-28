@@ -458,6 +458,130 @@ def dispatch(action: Action) -> str:
             except Exception as e:
                 return f"ERROR: browser_task: {e}"
 
+        elif t == "http_request":
+            # Make an HTTP request to any URL and return the response body.
+            # Retries on 429/503/504 with exponential backoff (uses error_policy config).
+            import urllib.request
+            import urllib.error
+            method = p.get("method", "GET").upper()
+            url = p.get("url", "")
+            headers = p.get("headers", {})
+            body = p.get("body", None)
+            timeout = int(p.get("timeout", 15))
+            if not url:
+                return "ERROR: http_request needs 'url'"
+            body_bytes = None
+            if body is not None:
+                if isinstance(body, dict):
+                    body_bytes = json.dumps(body).encode()
+                    headers.setdefault("Content-Type", "application/json")
+                else:
+                    body_bytes = str(body).encode()
+
+            policy = _dispatch_config.get("error_policy", {})
+            retry_statuses = set(int(x) for x in policy.get("retry_statuses", [429, 503, 504]))
+            max_retries = int(policy.get("max_retries_per_offer", 3))
+            backoff = float(policy.get("backoff_seconds", 2.0))
+            backoff_mult = float(policy.get("backoff_multiplier", 2.0))
+
+            last_error = ""
+            for attempt in range(1, max_retries + 2):  # +1 for initial attempt
+                req = urllib.request.Request(url, data=body_bytes, headers=headers, method=method)
+                try:
+                    with urllib.request.urlopen(req, timeout=timeout) as resp:
+                        status = resp.status
+                        raw = resp.read().decode(errors="replace")
+                        return f"HTTP {status}\n{raw}"
+                except urllib.error.HTTPError as e:
+                    if e.code in retry_statuses and attempt <= max_retries:
+                        logger.info("http_request status=%d, retrying in %.1fs (attempt %d/%d)", e.code, backoff, attempt, max_retries)
+                        time.sleep(backoff)
+                        backoff *= backoff_mult
+                        continue
+                    raw = e.read().decode(errors="replace")
+                    return f"HTTP {e.code} {e.reason}\n{raw}"
+                except urllib.error.URLError as e:
+                    return f"ERROR: http_request failed: {e.reason}"
+            return last_error or "ERROR: http_request failed after retries"
+
+        elif t == "execute_script":
+            # Execute inline Python code directly — no file needed.
+            import subprocess, tempfile, os, textwrap
+            code = p.get("code", "")
+            if not code:
+                return "ERROR: execute_script needs 'code'"
+            extra_env = p.get("env", {})
+            env = {**os.environ, **{str(k): str(v) for k, v in extra_env.items()}}
+            timeout = int(p.get("timeout", 30))
+            # Write to a temp file and run — cleaner than -c for multi-line code
+            with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as tf:
+                tf.write(textwrap.dedent(code))
+                tmp_path = tf.name
+            try:
+                result = subprocess.run(
+                    ["python3", tmp_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    env=env,
+                    cwd=str(_get_workspace_dir()),
+                )
+                out = result.stdout.strip()
+                err = result.stderr.strip()
+                parts = []
+                if out:
+                    parts.append(out)
+                if err:
+                    parts.append(f"[stderr]\n{err}")
+                if result.returncode != 0:
+                    parts.append(f"[exit {result.returncode}]")
+                return "\n".join(parts) or "(no output)"
+            except subprocess.TimeoutExpired:
+                return f"ERROR: execute_script timed out after {timeout}s"
+            finally:
+                os.unlink(tmp_path)
+
+        elif t == "run_script":
+            # Execute a Python script file from the workspace via subprocess.
+            # The agent writes the file first (write_file), then calls run_script.
+            import subprocess
+            rel = p.get("path", "")
+            if not rel:
+                return "ERROR: run_script needs 'path' (relative to workspace)"
+            try:
+                script_path = _resolve_workspace_path(rel)
+            except ValueError:
+                return "ERROR: path must be within workspace"
+            if not script_path.exists():
+                return f"ERROR: script not found: {rel}"
+            args = p.get("args", [])
+            extra_env = p.get("env", {})
+            import os
+            env = {**os.environ, **{str(k): str(v) for k, v in extra_env.items()}}
+            timeout = int(p.get("timeout", 30))
+            cmd = ["python3", str(script_path)] + [str(a) for a in args]
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    env=env,
+                    cwd=str(_get_workspace_dir()),
+                )
+                out = result.stdout.strip()
+                err = result.stderr.strip()
+                parts = []
+                if out:
+                    parts.append(out)
+                if err:
+                    parts.append(f"[stderr]\n{err}")
+                if result.returncode != 0:
+                    parts.append(f"[exit {result.returncode}]")
+                return "\n".join(parts) or "(no output)"
+            except subprocess.TimeoutExpired:
+                return f"ERROR: run_script timed out after {timeout}s"
+
         elif t == "wait":
             seconds = float(p.get("seconds", 2))
             time.sleep(seconds)

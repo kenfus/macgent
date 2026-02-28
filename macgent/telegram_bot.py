@@ -4,6 +4,11 @@ import logging
 import httpx
 import asyncio
 
+_RETRY_STATUSES = {429, 500, 502, 503, 504}
+_MAX_RETRIES = 3
+_BACKOFF_START = 2.0
+_BACKOFF_MULT = 2.0
+
 from macgent.config import Config
 from macgent import message_bus
 
@@ -18,18 +23,33 @@ class TelegramBot:
         self.offset = 0
 
     async def _api_call(self, method: str, **kwargs) -> dict:
-        """Make API call to Telegram Bot API."""
+        """Make API call to Telegram Bot API with retry/backoff on transient errors."""
         url = f"{self.api_base}/{method}"
-        # httpx timeout must exceed Telegram's long-poll timeout or ReadTimeout fires first.
-        # getUpdates passes timeout=30 to Telegram, so we need httpx > 30s.
         poll_timeout = kwargs.get("timeout", 0)
         http_timeout = max(30, poll_timeout + 10)
-        async with httpx.AsyncClient(timeout=http_timeout) as client:
-            response = await client.post(url, json=kwargs)
-            result = response.json()
-            if not result.get("ok"):
-                logger.error(f"Telegram API error: {result.get('description', 'Unknown error')}")
-            return result.get("result", {})
+        backoff = _BACKOFF_START
+        for attempt in range(1, _MAX_RETRIES + 2):
+            try:
+                async with httpx.AsyncClient(timeout=http_timeout) as client:
+                    response = await client.post(url, json=kwargs)
+                    if response.status_code in _RETRY_STATUSES and attempt <= _MAX_RETRIES:
+                        logger.info("Telegram API %s status=%d, retrying in %.1fs (attempt %d/%d)",
+                                    method, response.status_code, backoff, attempt, _MAX_RETRIES)
+                        await asyncio.sleep(backoff)
+                        backoff *= _BACKOFF_MULT
+                        continue
+                    result = response.json()
+                    if not result.get("ok"):
+                        logger.error(f"Telegram API error: {result.get('description', 'Unknown error')}")
+                    return result.get("result", {})
+            except (httpx.TimeoutException, httpx.NetworkError) as e:
+                if attempt <= _MAX_RETRIES:
+                    logger.info("Telegram API %s network error, retrying in %.1fs: %s", method, backoff, e)
+                    await asyncio.sleep(backoff)
+                    backoff *= _BACKOFF_MULT
+                else:
+                    raise
+        return {}
 
     async def send_message(self, chat_id: str, text: str) -> bool:
         """Send a message via Telegram."""
@@ -121,12 +141,30 @@ class TelegramBot:
 
 
 async def _send_text(config: Config, text: str) -> None:
-    """Send a plain text message to the configured chat."""
+    """Send a plain text message to the configured chat with retry/backoff."""
     if not config.telegram_bot_token or not config.telegram_chat_id:
         return
     url = f"https://api.telegram.org/bot{config.telegram_bot_token}/sendMessage"
-    async with httpx.AsyncClient(timeout=10) as client:
-        await client.post(url, json={"chat_id": config.telegram_chat_id, "text": text})
+    payload = {"chat_id": config.telegram_chat_id, "text": text}
+    backoff = _BACKOFF_START
+    for attempt in range(1, _MAX_RETRIES + 2):
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                response = await client.post(url, json=payload)
+                if response.status_code in _RETRY_STATUSES and attempt <= _MAX_RETRIES:
+                    logger.info("send_text status=%d, retrying in %.1fs (attempt %d/%d)",
+                                response.status_code, backoff, attempt, _MAX_RETRIES)
+                    await asyncio.sleep(backoff)
+                    backoff *= _BACKOFF_MULT
+                    continue
+                return
+        except (httpx.TimeoutException, httpx.NetworkError) as e:
+            if attempt <= _MAX_RETRIES:
+                logger.info("send_text network error, retrying in %.1fs: %s", backoff, e)
+                await asyncio.sleep(backoff)
+                backoff *= _BACKOFF_MULT
+            else:
+                raise
 
 
 def sync_send_message(config: Config, text: str) -> None:

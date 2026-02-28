@@ -28,9 +28,8 @@ class ManagerRole(BaseRole):
 
     def _is_bootstrapped(self) -> bool:
         base = Path(self.config.workspace_dir) / "agent"
-        has_identity = (base / "IDENTITY.md").exists() or (base / "identity.md").exists()
-        # Bootstrap is complete only after IDENTITY exists AND BOOTSTRAP has been removed.
-        return has_identity and not (base / "BOOTSTRAP.md").exists()
+        # IDENTITY.md existing is the only signal that bootstrap completed.
+        return (base / "IDENTITY.md").exists() or (base / "identity.md").exists()
 
     def should_wake_early(self) -> bool:
         return message_bus.should_wake()
@@ -116,6 +115,9 @@ class ManagerRole(BaseRole):
 
             results = []
             for a in actions:
+                if not isinstance(a, dict):
+                    results.append(f"[skipped] non-dict action: {str(a)[:80]}")
+                    continue
                 a_type = a.get("type", "")
                 params = a.get("params", {})
                 result = self._execute_action(a_type, params)

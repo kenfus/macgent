@@ -127,10 +127,15 @@ def _setup_workspace(workspace_dir: str):
     if not base_dir.exists():
         return
 
+    # IDENTITY.md is the bootstrap-complete marker — never re-copy BOOTSTRAP.md after that.
+    already_bootstrapped = (dest_dir / "agent" / "IDENTITY.md").exists()
+
     for src in base_dir.rglob("*"):
         if not src.is_file():
             continue
         rel = src.relative_to(base_dir)
+        if already_bootstrapped and rel.name == "BOOTSTRAP.md":
+            continue
         dst = dest_dir / rel
         if not dst.exists():
             dst.parent.mkdir(parents=True, exist_ok=True)

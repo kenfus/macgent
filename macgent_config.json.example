@@ -11,56 +11,97 @@
       "api_key_env": "OPENROUTER_API_KEY"
     },
     "kilo": {
-      "api_base": "https://api.kilo.ai/v1",
+      "api_base": "https://api.kilo.ai/api/gateway",
       "api_type": "openai",
       "api_key_env": "KILO_API_KEY"
     }
   },
   "offers": {
     "text": {
-      "openrouter_trinity": {"provider": "openrouter", "model": "arcee-ai/trinity-large-preview:free"},
-      "openrouter_nemotron_text": {"provider": "openrouter", "model": "nvidia/nemotron-3-nano-30b-a3b:free"},
-      "kilo_glm5": {"provider": "kilo", "model": "z-ai/glm-5:free"}
+      "kilo_kimi": {
+        "provider": "kilo",
+        "model": "moonshotai/kimi-k2.5:free"
+      },
+      "openrouter_nemotron_text": {
+        "provider": "openrouter",
+        "model": "nvidia/nemotron-3-nano-30b-a3b:free"
+      },
+      "kilo_glm5": {
+        "provider": "kilo",
+        "model": "z-ai/glm-5:free"
+      },
+      "kilo_sonnet": {
+        "provider": "kilo",
+        "model": "anthropic/claude-sonnet-4.6"
+      },
+      "kilo_auto": {
+        "provider": "kilo",
+        "model": "kilo/auto"
+      },
+      "kilo_auto_free": {
+        "provider": "kilo",
+        "model": "kilo/auto-free"
+      }
     },
     "vision": {
-      "openrouter_vision_primary": {"provider": "openrouter_vision", "model": "nvidia/nemotron-nano-12b-v2-vl:free"},
-      "openrouter_nemotron_vl": {"provider": "openrouter_vision", "model": "nvidia/nemotron-nano-12b-v2-vl:free"}
+      "openrouter_vision_primary": {
+        "provider": "openrouter_vision",
+        "model": "nvidia/nemotron-nano-12b-v2-vl:free"
+      },
+      "openrouter_nemotron_vl": {
+        "provider": "openrouter_vision",
+        "model": "nvidia/nemotron-nano-12b-v2-vl:free"
+      }
     }
   },
   "routes": {
     "text": {
-      "primary": "openrouter_trinity",
-      "fallbacks": ["kilo_glm5"]
+      "primary": "kilo_kimi",
+      "fallbacks": [
+        "kilo_auto_free",
+        "openrouter_nemotron_text"
+      ]
     },
     "vision": {
       "primary": "openrouter_vision_primary",
-      "fallbacks": ["openrouter_nemotron_vl"]
+      "fallbacks": [
+        "openrouter_nemotron_vl"
+      ]
     },
     "browser": {
       "text": {
-        "primary": "openrouter_trinity",
-        "fallbacks": ["kilo_glm5"]
+        "primary": "kilo_kimi",
+        "fallbacks": [
+          "kilo_auto_free",
+          "openrouter_nemotron_text"
+        ]
       },
       "vision": {
         "primary": "openrouter_vision_primary",
-        "fallbacks": ["openrouter_nemotron_vl"]
+        "fallbacks": [
+          "openrouter_nemotron_vl"
+        ]
       }
     }
   },
   "error_policy": {
-    "retry_statuses": [429, 503, 504],
+    "retry_statuses": [
+      429,
+      503,
+      504
+    ],
     "max_retries_per_offer": 2,
     "backoff_seconds": 1.5,
     "backoff_multiplier": 2.0
   },
   "logging": {
-    "level": "INFO"
-  },
-  "runtime": {
-    "workspace_dir": "/absolute/path/to/workspace"
+    "level": "DEBUG"
   },
   "integrations": {
     "telegram_bot_token_env": "TELEGRAM_BOT_TOKEN",
     "telegram_chat_id_env": "TELEGRAM_CHAT_ID"
+  },
+  "runtime": {
+    "workspace_dir": "/Users/openclaw/github/macgent/workspace"
   }
 }
