@@ -2,6 +2,8 @@ import sys
 import logging
 import shutil
 import os
+import json
+from datetime import date
 from pathlib import Path
 
 
@@ -23,6 +25,25 @@ def _update_env(env_path: Path, values: dict):
     env_path.write_text("\n".join(result) + "\n")
 
 
+def _update_runtime_config(config_path: Path, runtime_values: dict):
+    """Update runtime settings in macgent_config.json (create file if needed)."""
+    data = {}
+    if config_path.exists():
+        try:
+            data = json.loads(config_path.read_text())
+        except Exception:
+            data = {}
+    if not isinstance(data, dict):
+        data = {}
+    runtime = data.get("runtime", {})
+    if not isinstance(runtime, dict):
+        runtime = {}
+    runtime.update(runtime_values)
+    data["runtime"] = runtime
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+
+
 def _run_setup_wizard(config, env_path: Path):
     """Interactive terminal setup for missing configuration.
 
@@ -30,7 +51,10 @@ def _run_setup_wizard(config, env_path: Path):
     Never involves the LLM — pure Python/terminal.
     Returns an updated config object.
     """
-    needs_setup = (not config.telegram_bot_token) or (not config.telegram_chat_id)
+    has_workspace_in_cfg = bool(
+        str(config.model_config.get("runtime", {}).get("workspace_dir", "")).strip()
+    )
+    needs_setup = (not has_workspace_in_cfg) or (not config.telegram_bot_token) or (not config.telegram_chat_id)
     if not needs_setup:
         return config
 
@@ -41,7 +65,15 @@ def _run_setup_wizard(config, env_path: Path):
     print(f"\nWorkspace: {config.workspace_dir}")
     print(f"Log file:  {config.log_file}")
 
-    new_values = {}
+    new_runtime = {}
+    new_env = {}
+
+    # ── Workspace (stored in config JSON, not .env) ──────────
+    if not has_workspace_in_cfg:
+        suggested_workspace = str((Path.cwd() / "workspace").resolve())
+        raw_workspace = input(f"Workspace directory [{suggested_workspace}]: ").strip() or suggested_workspace
+        workspace_dir = str(Path(raw_workspace).expanduser().resolve())
+        new_runtime["workspace_dir"] = workspace_dir
 
     # ── Telegram ──────────────────────────────────────────────
     if not config.telegram_bot_token or not config.telegram_chat_id:
@@ -60,21 +92,23 @@ def _run_setup_wizard(config, env_path: Path):
         if token:
             chat_id = input("Paste your Telegram chat ID: ").strip()
             if chat_id:
-                new_values["TELEGRAM_BOT_TOKEN"] = token
-                new_values["TELEGRAM_CHAT_ID"] = chat_id
+                new_env["TELEGRAM_BOT_TOKEN"] = token
+                new_env["TELEGRAM_CHAT_ID"] = chat_id
 
-    if new_values:
-        _update_env(env_path, new_values)
-        print(f"\nSaved to {env_path}")
-        # Reload env + config
-        from dotenv import load_dotenv
-        load_dotenv(str(env_path), override=True)
-        for key, val in new_values.items():
-            os.environ[key] = val
+    if new_runtime:
+        cfg_path = Path(getattr(config, "model_config_path", "") or (Path.cwd() / "macgent_config.json"))
+        _update_runtime_config(cfg_path, new_runtime)
+        print(f"\nSaved runtime config to {cfg_path}")
+
+    if new_env:
+        _update_env(env_path, new_env)
+        print(f"Saved Telegram settings to {env_path}")
+    elif not new_runtime:
+        print("\n(Skipped — you can add TELEGRAM_* to .env later)")
+
+    if new_runtime or new_env:
         from macgent.config import Config
         config = Config.from_env()
-    else:
-        print("\n(Skipped — you can add TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to .env later)")
 
     print()
     return config
@@ -102,6 +136,16 @@ def _setup_workspace(workspace_dir: str):
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
 
+    # Mirror core skill references into workspace for on-demand reading by the agent.
+    core_skills_dir = Path(__file__).parent / "skills"
+    skills_dest = dest_dir / "skills" / "core"
+    if core_skills_dir.exists():
+        for src in core_skills_dir.glob("*.md"):
+            dst = skills_dest / src.name
+            if not dst.exists():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+
 
 def _setup_logging(log_file: str, debug: bool = False):
     """Configure logging with INFO by default and DEBUG only when requested."""
@@ -124,6 +168,17 @@ def _setup_logging(log_file: str, debug: bool = False):
     root.addHandler(fh)
 
 
+def _resolve_daily_log_path(log_file: str) -> str:
+    """Return a date-stamped log path, e.g. logs/macgent-YYYY-MM-DD.log."""
+    path = Path(log_file)
+    day = date.today().strftime("%Y-%m-%d")
+    if day in path.stem:
+        return str(path)
+    if path.suffix:
+        return str(path.with_name(f"{path.stem}-{day}{path.suffix}"))
+    return str(path.with_name(f"{path.name}-{day}"))
+
+
 def main():
     from dotenv import load_dotenv, find_dotenv
     dotenv_path = find_dotenv(usecwd=True)
@@ -132,6 +187,7 @@ def main():
 
     from macgent.config import Config, MACGENT_DIR
     config = Config.from_env()
+    config.log_file = _resolve_daily_log_path(config.log_file)
 
     # Interactive setup wizard for first-run config (name/workspace/telegram)
     config = _run_setup_wizard(config, env_file)
@@ -292,7 +348,7 @@ async def _run_daemon_async(config, interval: int, once: bool):
         print("✓ Telegram bot enabled — listening on @MacGentBot")
         telegram_task = asyncio.create_task(bot.run_polling())
     else:
-        print("(Telegram not configured — set TELEGRAM_BOT_TOKEN to enable)")
+        print("(Telegram not configured — set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env)")
 
     # Run the sync daemon loop in a thread pool
     # Note: DB objects must be created in the executor thread, not passed from main thread

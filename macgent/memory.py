@@ -315,10 +315,6 @@ class MemoryManager:
         if identity:
             sections.append(("Identity", identity))
 
-        skills = self.load_skills()
-        if skills:
-            sections.append(("Skills Reference", skills))
-
         core_memory = self.load_core_memory()
         if core_memory:
             sections.append(("Core Memory", core_memory))

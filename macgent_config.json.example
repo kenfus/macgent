@@ -18,7 +18,6 @@
   },
   "offers": {
     "text": {
-      "openrouter_primary": {"provider": "openrouter", "model": "arcee-ai/trinity-large-preview:free"},
       "openrouter_trinity": {"provider": "openrouter", "model": "arcee-ai/trinity-large-preview:free"},
       "openrouter_nemotron_text": {"provider": "openrouter", "model": "nvidia/nemotron-3-nano-30b-a3b:free"},
       "kilo_glm5": {"provider": "kilo", "model": "z-ai/glm-5:free"}
@@ -30,8 +29,8 @@
   },
   "routes": {
     "text": {
-      "primary": "openrouter_primary",
-      "fallbacks": ["openrouter_trinity", "kilo_glm5"]
+      "primary": "openrouter_trinity",
+      "fallbacks": ["kilo_glm5"]
     },
     "vision": {
       "primary": "openrouter_vision_primary",
@@ -39,8 +38,8 @@
     },
     "browser": {
       "text": {
-        "primary": "openrouter_primary",
-        "fallbacks": ["openrouter_trinity", "kilo_glm5"]
+        "primary": "openrouter_trinity",
+        "fallbacks": ["kilo_glm5"]
       },
       "vision": {
         "primary": "openrouter_vision_primary",
@@ -56,5 +55,12 @@
   },
   "logging": {
     "level": "INFO"
+  },
+  "runtime": {
+    "workspace_dir": "/absolute/path/to/workspace"
+  },
+  "integrations": {
+    "telegram_bot_token_env": "TELEGRAM_BOT_TOKEN",
+    "telegram_chat_id_env": "TELEGRAM_CHAT_ID"
   }
 }

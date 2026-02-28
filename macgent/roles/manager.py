@@ -28,7 +28,9 @@ class ManagerRole(BaseRole):
 
     def _is_bootstrapped(self) -> bool:
         base = Path(self.config.workspace_dir) / "agent"
-        return (base / "IDENTITY.md").exists() or (base / "identity.md").exists()
+        has_identity = (base / "IDENTITY.md").exists() or (base / "identity.md").exists()
+        # Bootstrap is complete only after IDENTITY exists AND BOOTSTRAP has been removed.
+        return has_identity and not (base / "BOOTSTRAP.md").exists()
 
     def should_wake_early(self) -> bool:
         return message_bus.should_wake()
@@ -51,6 +53,7 @@ class ManagerRole(BaseRole):
 
     def tick(self) -> bool:
         logger.info("Manager tick starting")
+        bootstrapped = self._is_bootstrapped()
 
         is_active_wake = self.should_wake_early()
         if is_active_wake:
@@ -58,23 +61,30 @@ class ManagerRole(BaseRole):
 
         ceo_message = None
         # Only active wake cycles consume Telegram queue messages.
-        if is_active_wake:
+        if is_active_wake and bootstrapped:
             ceo_message = message_bus.dequeue_message("agent", from_role="ceo")
             if ceo_message:
                 logger.info("Manager loaded 1 CEO message from queue (id=%s)", ceo_message.get("id"))
             else:
                 logger.info("Active wake received but no queued CEO message found")
+        elif is_active_wake and not bootstrapped:
+            logger.info("Active wake ignored during bootstrap-only mode")
 
-        system = self.get_system_prompt()
-        if ceo_message:
-            prompt = (
-                "Process this CEO message now. Execute actions as needed. "
-                "When fully handled, respond HEARTBEAT_OK.\n\n"
-                "## CEO Message\n\n"
-                f"{ceo_message['content']}\n"
-            )
-        else:
+        # First boot is bootstrap-only: SOUL + BOOTSTRAP, no extra memory/skills context.
+        if not bootstrapped:
+            system = self.memory.load_soul("agent")
             prompt = self._load_manager_task_prompt()
+        else:
+            system = self.get_system_prompt()
+            if ceo_message:
+                prompt = (
+                    "Process this CEO message now. Execute actions as needed. "
+                    "When fully handled, respond HEARTBEAT_OK.\n\n"
+                    "## CEO Message\n\n"
+                    f"{ceo_message['content']}\n"
+                )
+            else:
+                prompt = self._load_manager_task_prompt()
 
         conversation = [{"role": "user", "content": prompt}]
         did_work = False

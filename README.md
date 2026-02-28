@@ -83,29 +83,236 @@ bash examples/mail_test.sh
 
 ## How It Works
 
-macgent has **three coordinating roles**:
+macgent runs as a **single Agent** with a file-based soul, memory, and skill system. The daemon wakes the agent on a schedule or on Telegram messages. The agent reads its markdown instructions, calls an LLM, executes returned actions, and sleeps until next time.
 
-### 🧠 Manager
-- Monitors email for actionable items
-- Classifies tasks by priority
-- Creates task entries
-- Checks on stuck tasks
-- Escalates to you when needed
+---
 
-### 🔧 Worker
-- Executes tasks using **browser automation**
-- Interacts with web applications
-- Reads/sends emails
-- Accesses calendars
-- Reports progress and results
+## System Flow
 
-### ✓ Stakeholder
-- Reviews Worker's plan before execution
-- Checks quality of completed work
-- Approves or requests changes
-- Escalates ambiguous or impossible tasks
+### Scenario 1 — First-Time Boot (Bootstrap)
 
-These agents have **souls** (character definitions) and **memory** (learning from past tasks), making them more effective over time.
+On the very first run, `workspace/agent/IDENTITY.md` does not exist and `workspace/agent/BOOTSTRAP.md` does. The agent detects this and enters bootstrap mode.
+
+```
+startup
+  └─ _is_bootstrapped() → False
+       ├─ system prompt  ←  workspace/agent/SOUL.md  (only, no memory context)
+       └─ user prompt    ←  workspace/agent/BOOTSTRAP.md
+            │
+            ▼
+       LLM multi-turn loop (up to 15 turns)
+            │
+            ├─ LLM returns JSON actions, executed one by one:
+            │    • send_telegram  — introduces itself, asks CEO 3 questions
+            │    • file_write     — creates workspace/agent/USER.md (fields marked "unknown (asked)")
+            │    • file_write     — creates workspace/agent/IDENTITY.md  ← marks bootstrap complete
+            │    • file_delete    — deletes workspace/agent/BOOTSTRAP.md
+            │
+            └─ LLM responds HEARTBEAT_OK → bootstrap cycle ends
+```
+
+**Files loaded into context during bootstrap:**
+
+| File | Purpose |
+|------|---------|
+| `workspace/agent/SOUL.md` | System prompt — personality, workspace layout, skill index |
+| `workspace/agent/BOOTSTRAP.md` | User prompt — step-by-step first-run instructions |
+
+> Bootstrap is intentionally minimal: no memory, no identity, no skills pre-loaded. The LLM only sees its soul and its one-time setup instructions.
+
+**Bootstrap completes when:**
+- `workspace/agent/IDENTITY.md` exists
+- `workspace/agent/BOOTSTRAP.md` is deleted
+- The next `tick()` sees `_is_bootstrapped() → True` and switches to the normal heartbeat
+
+---
+
+### Scenario 2 — Passive Heartbeat
+
+After bootstrap the daemon wakes every `daemon_interval` seconds (default: 1800 s / 30 min). The agent runs a heartbeat check against the Notion board and any pending messages.
+
+```
+scheduler wake (every 30 min by default)
+  └─ _is_bootstrapped() → True
+  └─ no pending Telegram message
+       │
+       ├─ system prompt  ←  memory.build_context("agent")
+       │    Assembled in this order, separated by markdown headings:
+       │
+       │      # Soul
+       │      workspace/agent/SOUL.md
+       │
+       │      # Identity
+       │      workspace/agent/IDENTITY.md
+       │
+       │      # Core Memory
+       │      workspace/agent/memory/CORE_MEMORY.md
+       │
+       │      # Role Memory
+       │      workspace/agent/memory/LONGTERM_MEMORY.md
+       │
+       │      # Recent Memory (last N days)
+       │      workspace/memory/<YYYY-MM-DD>_MEMORY.md  (today + yesterday by default)
+       │
+       │      # Relevant Memory Chunks (top-K)
+       │      Semantically recalled entries from semantic_memories.jsonl
+       │
+       └─ user prompt    ←  workspace/agent/HEARTBEAT.md
+            │
+            ▼
+       LLM multi-turn loop (up to 15 turns)
+            │
+            ├─ LLM returns JSON action(s) → Python executes each:
+            │    {"actions": [
+            │      {"type": "notion_query", "params": {...}},
+            │      {"type": "send_telegram", "params": {"text": "Blocked: task X needs your input"}}
+            │    ]}
+            │    Results fed back: "Action results: [...]\nContinue or respond HEARTBEAT_OK."
+            │
+            └─ LLM responds HEARTBEAT_OK → tick ends cleanly
+```
+
+**Files loaded into context during a heartbeat:**
+
+| File | Section in prompt | Description |
+|------|-------------------|-------------|
+| `workspace/agent/SOUL.md` | Soul | Personality, workspace layout, on-demand skill index |
+| `workspace/agent/IDENTITY.md` | Identity | Agent's name, style, communication approach |
+| `workspace/agent/memory/CORE_MEMORY.md` | Core Memory | Memory policy — how to read/write memory |
+| `workspace/agent/memory/LONGTERM_MEMORY.md` | Role Memory | Curated long-term lessons, distilled nightly |
+| `workspace/memory/<YYYY-MM-DD>_MEMORY.md` | Recent Memory | Rolling daily log for the last N days |
+| `workspace/memory/semantic_memories.jsonl` | Relevant Chunks | Top-K entries recalled by semantic/lexical similarity to the task |
+| `workspace/agent/HEARTBEAT.md` | User prompt | Checklist: what to inspect and how to respond |
+
+> **Skills are not pre-loaded.** `SOUL.md` lists skill file paths. The agent reads them on-demand with a `file_read` action when it needs a specific action's schema (e.g., `workspace/skills/core/brave_search.md`).
+
+---
+
+### Scenario 3 — Active Messaging (Telegram Wake)
+
+When you send a message via Telegram, the bot enqueues it in an in-memory FIFO and fires a wake signal. The sleeping daemon detects this within 500 ms and wakes early.
+
+```
+you → Telegram → TelegramBot.handle_message()
+  └─ message_bus.enqueue_message("ceo", "agent", task_id, text)
+  └─ message_bus.request_wake()
+       │
+       ▼  daemon sleep-poll fires (checks every 500 ms)
+agent tick (early wake)
+  └─ should_wake_early() → True → clear_wake_request()
+  └─ ceo_message = message_bus.dequeue_message("agent", from_role="ceo")
+       │
+       ├─ system prompt  ←  memory.build_context("agent")   (same full context as heartbeat)
+       │
+       └─ user prompt    ←  built inline:
+            "Process this CEO message now. Execute actions as needed.
+             When fully handled, respond HEARTBEAT_OK.
+             ## CEO Message
+             {your message text}"
+            │
+            ▼
+       LLM multi-turn loop (up to 15 turns)
+            │
+            ├─ LLM may execute any combination of actions:
+            │    • notion_create   — create a new task from your request
+            │    • notion_update   — unblock a waiting task
+            │    • send_telegram   — reply to you with confirmation or a question
+            │    • (any other registered action)
+            │
+            └─ LLM responds HEARTBEAT_OK → active cycle ends
+
+  then (always, regardless of active/passive):
+
+worker.tick()
+  └─ notion_query → find first task with status containing "ready"
+       └─ run_task(task)
+            └─ Agent.run(task_description + notion page_id)
+                 │
+                 ├─ macOS task? (keywords: email / mail / calendar / imessage / message)
+                 │    └─ _run_macos_direct_loop()
+                 │         Step loop (up to max_steps, default 30):
+                 │           observe → think (LLM) → act → observe
+                 │         Terminal: action.type == "done" or "fail"
+                 │
+                 └─ Web / other task?
+                      └─ _run_browser_task_delegate()
+                           Dispatches a single "browser_task" action
+                           Browser agent runs its own internal loop
+                           Terminal: payload["solved"] == True / False
+```
+
+---
+
+## LLM Call Structure
+
+Every call follows the same pattern:
+
+```
+SYSTEM:
+  # Soul
+  <workspace/agent/SOUL.md content>
+
+  ---
+
+  # Identity
+  <workspace/agent/IDENTITY.md content>
+
+  ---
+
+  # Core Memory
+  <workspace/agent/memory/CORE_MEMORY.md content>
+
+  ---
+
+  # Role Memory          (if non-empty)
+  <LONGTERM_MEMORY.md>
+
+  ---
+
+  # Recent Memory (last N days)   (if non-empty)
+  <YYYY-MM-DD_MEMORY.md + previous day ...>
+
+  ---
+
+  # Relevant Memory Chunks (top-K)   (if task_description given)
+  - [lesson] ...recalled entry...
+
+USER:
+  <HEARTBEAT.md content>
+  — or —
+  <BOOTSTRAP.md content>
+  — or —
+  "Process this CEO message: ..."
+  — or —
+  <task description + notion page_id>
+
+[multi-turn]
+  ASSISTANT: {"actions": [...]}
+  USER:      "Action results: [...]\nContinue or respond HEARTBEAT_OK."
+  ASSISTANT: HEARTBEAT_OK
+```
+
+The system prompt is **rebuilt fresh on every tick** — nothing is cached between cycles. The memory sections are non-empty only when the corresponding files exist and have content.
+
+---
+
+## "Done" Signal Reference
+
+| Context | Signal | Code location |
+|---------|--------|---------------|
+| Agent heartbeat / active message | LLM text contains `HEARTBEAT_OK` | `manager.py` — turn loop |
+| Worker macOS step loop | `action.type == "done"` | `agent.py` — `_run_macos_direct_loop` |
+| Worker macOS step loop | `action.type == "fail"` | `agent.py` — `_run_macos_direct_loop` |
+| Worker macOS step loop | Same action repeated 3× | `agent.py` — stuck detection |
+| Worker macOS step loop | `max_steps` exhausted | `agent.py` — loop exit |
+| Worker browser task | `payload["solved"] == True` | `agent.py` — `_run_browser_task_delegate` |
+| Agent heartbeat turn limit | 15 turns without `HEARTBEAT_OK` | `manager.py` — `MAX_TURNS = 15` |
+
+**Summary:** The orchestrator (agent/heartbeat loop) signals completion via the plain-text sentinel `HEARTBEAT_OK`. The task execution loop signals completion via structured JSON action types (`done` / `fail`). There is no other magic keyword.
+
+---
+
+The agent has a **soul** (character definition) and **memory** (file-based, grows over time), making it more effective with every interaction.
 
 ## Core Concepts
 
@@ -218,231 +425,3 @@ uv run macgent daemon --once
 ### Environment Variables
 
 See `.env.example` for current options. Model routing is defined in `macgent_config.json` (primary + fallback chains for text and vision).
-
-### Soul Customization
-
-Edit how agents behave:
-
-```bash
-uv run macgent soul edit worker    # How Worker executes tasks
-uv run macgent soul edit manager   # How Manager monitors email
-uv run macgent soul edit stakeholder  # How Stakeholder reviews
-```
-
-These files are the source of truth:
-- `workspace/manager/soul.md`
-- `workspace/worker/soul.md`
-
-## Examples
-
-Ready-to-run examples demonstrating different capabilities:
-
-
-### Hotel Booking
-```bash
-bash examples/booking_hotels.sh
-```
-Agent navigates Booking.com, searches for hotels near Basel.
-
-### Google Sheets
-```bash
-bash examples/google_sheets.sh
-```
-Agent creates spreadsheet, enters data.
-
-### Email
-```bash
-bash examples/mail_test.sh
-```
-Agent reads emails, sends test message.
-
-## Monitoring
-
-### View Task Status
-
-```bash
-uv run macgent status
-```
-
-Shows all tasks with status indicators:
-- ` ` = pending
-- `>` = in progress
-- `R` = review
-- `+` = completed
-- `!` = failed
-- `^` = escalated
-
-### View Activity Log
-
-```bash
-uv run macgent log -n 20
-```
-
-Shows recent agent actions and turns.
-
-### Inspect Results
-
-After a task completes:
-
-```bash
-uv run macgent status
-# Look for task details
-```
-
-## Common Tasks
-
-### Automate a Web Form
-
-```bash
-uv run macgent 'Go to example.com. Fill in the form with name="John", email="john@example.com", submit.'
-```
-
-### Search and Extract Data
-
-```bash
-uv run macgent 'Go to weather.com, search for "Basel Switzerland", get the 5-day forecast.'
-```
-
-### Email Automation
-
-```bash
-uv run macgent task 'Read my recent emails from this week and forward the important ones to my boss.'
-```
-
-### Multi-Step Workflows
-
-```bash
-uv run macgent task 'Check the weather for next week, check my calendar availability, and email me a summary.'
-```
-
-## Architecture
-
-```
-macgent/
-├── actions/          # Action executors (click, type, navigate)
-├── perception/       # Observation generators (screenshots, DOM extraction)
-├── reasoning/        # LLM integration and decision-making
-├── roles/            # Manager, Worker, Stakeholder agent implementations
-├── prompts/          # System prompts and context builders
-├── memory.py         # File-based memory context + semantic recall
-├── message_bus.py    # In-memory FIFO messaging + wake signal
-└── agent.py          # Single-agent orchestrator
-
-skills/              # Documentation of available skills
-docs/                # Project architecture and setup docs
-workspace/           # Runtime soul + memory files copied from macgent/workspace templates
-examples/            # Example scripts to run
-```
-
-## Troubleshooting
-
-### "ERROR: Set OPENROUTER_API_KEY (or REASONING_API_KEY) in .env file"
-Add your LLM API key to `.env` and ensure it's loaded.
-
-### Agent seems stuck
-- Press Ctrl+C to stop the agent
-- Check `uv run macgent log` to see what it was doing
-- Review the soul if behavior is unexpected
-- Run a simpler task to test
-
-### Browser actions not working
-- Ensure Safari is the default browser
-- If using another browser, see [Browser Automation](./skills/browser_automation.md)
-- Close popups manually if agent gets stuck
-- Check that interactive elements are visible on screen
-
-### Semantic recall disabled
-Install optional dependency:
-```bash
-uv pip install fastembed
-```
-
-### Telegram notifications not working
-Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env`.
-
-## Development
-
-### Adding a New Skill
-
-1. Implement the action in `macgent/actions/`
-2. Document it in `skills/skill_name.md`
-3. Add to Worker soul
-4. Test with an example script
-
-### Customizing an Agent's Soul
-
-Edit the soul file and the agent will automatically use the new behavior:
-
-```bash
-uv run macgent soul edit worker
-# Make changes, save file
-# Next task will use the new soul
-```
-
-### Debugging Agent Decisions
-
-Enable verbose logging:
-
-```bash
-uv run macgent --debug 'Your task'
-```
-
-With `--debug`, logs include LLM prompt payloads, selected model aliases, and model responses.
-
-### Running Tests
-
-```bash
-uv run pytest tests/
-```
-
-## Data Privacy
-
-- All data is stored locally (`~/.macgent/`)
-- No cloud syncing of tasks or memories
-- API calls go to your configured LLM provider
-- Safari history/cookies not accessed
-- Email and calendar integration use local APIs
-
-## Limitations
-
-- **Requires Safari** for browser automation (not Chrome/Firefox yet)
-- **macOS only** (uses native APIs)
-- **No login automation** by default (can be customized in soul)
-- **Single-page apps** take more steps (SPAs don't reload visually)
-- **Error recovery** is manual (agent doesn't retry internally)
-
-## Future Roadmap
-
-- [ ] ChromeDriver support (for other browsers)
-- [ ] Memory pruning (forgetting old memories)
-- [ ] Explicit memory queries (agents ask what they know)
-- [ ] Cross-agent memory sharing
-- [ ] Mobile device control
-- [ ] Voice commands for tasks
-- [ ] Web UI for task management
-
-## License
-
-MIT License - See LICENSE file.
-
-## Contributing
-
-Contributions welcome! Please:
-
-1. Fork the repo
-2. Create a feature branch
-3. Add tests for new features
-4. Submit a pull request
-
-## Support
-
-- 📚 **Guides**: See [docs/](./docs/) for in-depth documentation
-- 🛠️ **Skills**: Check [skills/](./skills/) for what agents can do
-- 💡 **Examples**: Run the [examples/](./examples/) to see it in action
-- 🐛 **Issues**: Report bugs on GitHub
-
-## See Also
-
-- [macgent/workspace/core_memory.md](./macgent/workspace/core_memory.md) — Core memory contract template
-- [skills/README.md](./skills/README.md) — Complete skill reference
-- [TELEGRAM_BOT.md](./TELEGRAM_BOT.md) — Using the Telegram integration

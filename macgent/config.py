@@ -120,6 +120,16 @@ class Config:
         default_cfg_path = str(Path.cwd() / "macgent_config.json")
         cfg_path = os.getenv("MACGENT_CONFIG_PATH", default_cfg_path)
         model_cfg = cls._load_model_config(cfg_path)
+        runtime_cfg = model_cfg.get("runtime", {})
+        integrations_cfg = model_cfg.get("integrations", {})
+        workspace_from_cfg = str(runtime_cfg.get("workspace_dir", "")).strip()
+        log_from_cfg = str(runtime_cfg.get("log_file", "")).strip()
+        tg_token_env = str(integrations_cfg.get("telegram_bot_token_env", "TELEGRAM_BOT_TOKEN")).strip() or "TELEGRAM_BOT_TOKEN"
+        tg_chat_env = str(integrations_cfg.get("telegram_chat_id_env", "TELEGRAM_CHAT_ID")).strip() or "TELEGRAM_CHAT_ID"
+        tg_token_from_cfg = str(integrations_cfg.get("telegram_bot_token", "")).strip()
+        tg_chat_from_cfg = str(integrations_cfg.get("telegram_chat_id", "")).strip()
+        tg_token_from_env = os.getenv(tg_token_env, "").strip()
+        tg_chat_from_env = os.getenv(tg_chat_env, "").strip()
 
         return cls(
             macgent_name=cls.macgent_name,
@@ -167,12 +177,12 @@ class Config:
             worker_models=os.getenv("WORKER_MODELS", cls.worker_models),
             daemon_interval=int(os.getenv("DAEMON_INTERVAL", str(cls.daemon_interval))),
             stale_task_minutes=int(os.getenv("STALE_TASK_MINUTES", str(cls.stale_task_minutes))),
-            telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
-            telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
+            telegram_bot_token=tg_token_from_env or tg_token_from_cfg,
+            telegram_chat_id=tg_chat_from_env or tg_chat_from_cfg,
             notion_token=os.getenv("NOTION_TOKEN", ""),
             notion_database_id=os.getenv("NOTION_PLANNING_DATABASE_ID", ""),
-            workspace_dir=default_workspace,
-            log_file=default_log,
+            workspace_dir=workspace_from_cfg or default_workspace,
+            log_file=log_from_cfg or default_log,
             faiss_path=os.getenv("MACGENT_FAISS_PATH", str(macgent_dir / "memory.faiss")),
             memories_dir=os.getenv("MACGENT_MEMORIES_DIR", str(macgent_dir / "memories")),
             memory_recent_days=int(os.getenv("MEMORY_RECENT_DAYS", str(cls.memory_recent_days))),
