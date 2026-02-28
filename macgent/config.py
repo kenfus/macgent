@@ -84,6 +84,13 @@ class Config:
     memory_recent_days: int = 2
     memory_top_k: int = 5
 
+    # Embedding model for semantic memory (FAISS)
+    # Leave embed_api_key empty to use local fastembed (sentence-transformers/all-MiniLM-L6-v2, ~90MB).
+    # Set embed_api_key to use any OpenAI-compatible embeddings API instead.
+    embedding_model: str = ""
+    embedding_api_key: str = ""
+    embedding_api_base: str = "https://api.openai.com/v1"
+
     @classmethod
     def _load_model_config(cls, path: str) -> dict[str, Any]:
         p = Path(path)
@@ -181,6 +188,9 @@ class Config:
             memories_dir=os.getenv("MACGENT_MEMORIES_DIR", str(macgent_dir / "memories")),
             memory_recent_days=int(os.getenv("MEMORY_RECENT_DAYS", str(cls.memory_recent_days))),
             memory_top_k=int(os.getenv("MEMORY_TOP_K", str(cls.memory_top_k))),
+            embedding_model=os.getenv("EMBEDDING_MODEL", cls.embedding_model),
+            embedding_api_key=os.getenv("EMBEDDING_API_KEY", cls.embedding_api_key),
+            embedding_api_base=os.getenv("EMBEDDING_API_BASE", cls.embedding_api_base),
         )
 
     def get_model_chain(self, role: str) -> list[str]:

@@ -4,9 +4,8 @@ import logging
 import base64
 from pathlib import Path
 from macgent.models import Action
-from macgent.actions import safari_actions, mouse, calendar_actions
+from macgent.actions import mouse, calendar_actions
 from macgent.actions.brave_search import brave_web_search_json
-from macgent.perception.safari import execute_js_in_safari
 from macgent.utils_osascript import run_osascript
 from macgent.reasoning.llm_client import build_vision_fallback_client
 
@@ -116,77 +115,8 @@ def dispatch(action: Action) -> str:
     p = action.params
 
     try:
-        if t == "navigate":
-            return safari_actions.navigate(p["url"])
-
-        elif t == "go_back":
-            return safari_actions.go_back()
-
-        elif t == "go_forward":
-            return safari_actions.go_forward()
-
-        elif t == "click":
-            if "index" in p:
-                return safari_actions.click_element_by_index(int(p["index"]))
-            elif "selector" in p:
-                return safari_actions.click_element(p["selector"])
-            elif "text" in p:
-                return safari_actions.click_element_by_text(p["text"], p.get("tag", "*"))
-            else:
-                return "ERROR: click needs 'index', 'selector', or 'text'"
-
-        elif t == "click_element":
-            if "index" in p:
-                return safari_actions.click_element_by_index(int(p["index"]))
-            elif "selector" in p:
-                return safari_actions.click_element(p["selector"])
-            elif "text" in p:
-                return safari_actions.click_element_by_text(p["text"], p.get("tag", "*"))
-            else:
-                return "ERROR: click_element needs 'index', 'selector', or 'text'"
-
-        elif t == "type":
-            if "index" in p:
-                return safari_actions.type_text_by_index(int(p["index"]), p["text"])
-            elif "selector" in p:
-                return safari_actions.type_text(p["selector"], p["text"])
-            else:
-                return safari_actions.type_text_by_keystroke(p["text"])
-
-        elif t == "type_text":
-            if "index" in p:
-                return safari_actions.type_text_by_index(int(p["index"]), p["text"])
-            elif "selector" in p:
-                return safari_actions.type_text(p["selector"], p["text"])
-            else:
-                return safari_actions.type_text_by_keystroke(p["text"])
-
-        elif t == "select_option":
-            return safari_actions.select_option_by_index(int(p["index"]), p["value"])
-
-        elif t == "key_press":
-            return safari_actions.press_key(p["key"], p.get("modifiers"))
-
-        elif t == "mouse_click":
+        if t == "mouse_click":
             return mouse.mouse_click(int(p["x"]), int(p["y"]))
-
-        elif t == "scroll":
-            return safari_actions.scroll_page(
-                p.get("direction", "down"),
-                int(p.get("amount", 500)),
-            )
-
-        elif t == "execute_js":
-            return execute_js_in_safari(p["code"])
-
-        elif t == "new_tab":
-            return safari_actions.new_tab(p.get("url", ""))
-
-        elif t == "close_tab":
-            return safari_actions.close_tab()
-
-        elif t == "switch_tab":
-            return safari_actions.switch_tab(int(p["tab"]))
 
         elif t == "open_app":
             app = p["app"]
