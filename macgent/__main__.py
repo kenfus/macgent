@@ -334,14 +334,35 @@ async def _run_daemon_async(config, interval: int, once: bool):
 def _sync_daemon_loop(config, interval, once):
     """Synchronous daemon loop (runs in thread pool while Telegram polls in async)."""
     import time
+    import threading
     from macgent.memory import MemoryManager
     from macgent.roles.manager import ManagerRole
+    from macgent.pulse import SystemPulse
 
     memory = MemoryManager(config)
     manager = ManagerRole(config, None, memory)
+    pulse = SystemPulse(config, memory)
 
-    # After bootstrap is done, skip the very first tick so the agent starts idle
-    # and only reacts to incoming messages or the next scheduled interval.
+    pulse_interval = max(10, int(getattr(config, "pulse_interval", 60)))
+
+    # Run the system pulse in a background thread (lightweight, mostly Python).
+    _pulse_stop = threading.Event()
+
+    def _pulse_thread_fn():
+        while not _pulse_stop.is_set():
+            try:
+                pulse.tick()
+            except Exception as exc:
+                import logging
+                logging.getLogger("macgent.pulse").warning("Pulse tick error: %s", exc)
+            _pulse_stop.wait(timeout=pulse_interval)
+
+    pulse_thread = threading.Thread(target=_pulse_thread_fn, name="macgent-pulse", daemon=True)
+    pulse_thread.start()
+    print(f"System pulse started (interval={pulse_interval}s)")
+
+    # After bootstrap is done, skip the very first agent tick so the agent
+    # starts idle and only reacts to incoming messages or the next interval.
     skip_first_tick = manager._is_bootstrapped()
     if skip_first_tick:
         print("Agent already bootstrapped — starting idle, waiting for first signal or interval.")
@@ -356,7 +377,7 @@ def _sync_daemon_loop(config, interval, once):
             if once:
                 break
 
-            # Sleep with early wake support for active Telegram messages.
+            # Sleep with early wake support for Telegram messages or pulse signals.
             sleep_start = time.time()
             while True:
                 elapsed = time.time() - sleep_start
@@ -364,10 +385,12 @@ def _sync_daemon_loop(config, interval, once):
                     break  # Normal wake by interval
                 if manager.should_wake_early():
                     print("⚡ Waking early due to external notification!")
-                    break  # Woken by external signal
+                    break  # Woken by Telegram / pulse
                 time.sleep(0.5)  # Check every 500ms for wake signals
     except KeyboardInterrupt:
         print("\nDaemon stopped.")
+    finally:
+        _pulse_stop.set()
 
 
 def _show_log(config, n: int):

@@ -57,10 +57,7 @@
   "routes": {
     "text": {
       "primary": "kilo_kimi",
-      "fallbacks": [
-        "kilo_auto_free",
-        "openrouter_nemotron_text"
-      ]
+      "fallbacks": []
     },
     "vision": {
       "primary": "openrouter_vision_primary",
@@ -71,10 +68,7 @@
     "browser": {
       "text": {
         "primary": "kilo_kimi",
-        "fallbacks": [
-          "kilo_auto_free",
-          "openrouter_nemotron_text"
-        ]
+        "fallbacks": []
       },
       "vision": {
         "primary": "openrouter_vision_primary",
@@ -90,7 +84,7 @@
       503,
       504
     ],
-    "max_retries_per_offer": 2,
+    "max_retries_per_offer": 3,
     "backoff_seconds": 1.5,
     "backoff_multiplier": 2.0
   },

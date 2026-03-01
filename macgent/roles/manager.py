@@ -58,38 +58,62 @@ class ManagerRole(BaseRole):
         if is_active_wake:
             self.clear_wake_request()
 
-        # Dequeue CEO messages on any active wake — including during bootstrap.
-        ceo_message = None
+        # Dequeue the next incoming message on active wake.
+        # CEO messages (from Telegram) take priority over system messages (from pulse).
+        incoming_message = None
+        incoming_from = None
         if is_active_wake:
-            ceo_message = message_bus.dequeue_message("agent", from_role="ceo")
-            if ceo_message:
-                logger.info("Manager loaded 1 CEO message from queue (id=%s)", ceo_message.get("id"))
-                ts = datetime.datetime.now().strftime("%H:%M")
-                self.memory.append_to_daily_memory(f"**[{ts}] CEO:**\n{ceo_message['content']}\n")
-                # Re-signal wake if more messages are waiting so the daemon loop
-                # processes them immediately instead of waiting for the next heartbeat.
-                if message_bus.has_pending_messages("agent", from_role="ceo"):
-                    message_bus.request_wake()
-                    logger.info("More CEO messages pending — re-signalling wake")
+            msg = message_bus.dequeue_message("agent", from_role="ceo")
+            if msg:
+                incoming_message, incoming_from = msg, "ceo"
             else:
-                logger.info("Active wake received but no queued CEO message found")
+                msg = message_bus.dequeue_message("agent", from_role="system")
+                if msg:
+                    incoming_message, incoming_from = msg, "system"
+
+            if incoming_message:
+                logger.info(
+                    "Manager loaded message (id=%s, from=%s)",
+                    incoming_message.get("id"), incoming_from,
+                )
+                # Only CEO messages go into daily memory (system tasks are maintenance noise)
+                if incoming_from == "ceo":
+                    ts = datetime.datetime.now().strftime("%H:%M")
+                    self.memory.append_to_daily_memory(
+                        f"**[{ts}] CEO:**\n{incoming_message['content']}\n"
+                    )
+                # Re-signal if more messages are waiting
+                if message_bus.has_pending_messages("agent", from_role="ceo") or \
+                        message_bus.has_pending_messages("agent", from_role="system"):
+                    message_bus.request_wake()
+                    logger.info("More messages pending — re-signalling wake")
+            else:
+                logger.info("Active wake received but no queued message found")
 
         # All modes share the same full context (soul + skills + memory).
-        # Only the user prompt differs: BOOTSTRAP.md, HEARTBEAT.md, or a CEO message.
+        # Only the user prompt differs: BOOTSTRAP.md, HEARTBEAT.md, or an incoming message.
         system = self.get_system_prompt()
         if not bootstrapped:
             prompt = self._load_manager_task_prompt()
-            if ceo_message:
-                # Append the human's reply so the agent can act on it within bootstrap.
-                prompt += f"\n\n## CEO Reply\n\n{ceo_message['content']}\n"
+            if incoming_message:
+                label = "CEO Reply" if incoming_from == "ceo" else "System Task"
+                prompt += f"\n\n## {label}\n\n{incoming_message['content']}\n"
         else:
-            if ceo_message:
-                prompt = (
-                    "Process this CEO message now. Execute actions as needed. "
-                    'When fully handled, finish with {"type": "finish"}.\n\n'
-                    "## CEO Message\n\n"
-                    f"{ceo_message['content']}\n"
-                )
+            if incoming_message:
+                if incoming_from == "ceo":
+                    prompt = (
+                        "Process this CEO message now. Execute actions as needed. "
+                        'When fully handled, finish with {"type": "finish"}.\n\n'
+                        "## CEO Message\n\n"
+                        f"{incoming_message['content']}\n"
+                    )
+                else:
+                    # System task (e.g. memory distillation from pulse)
+                    prompt = (
+                        "Process this system task. Execute actions as needed. "
+                        'When fully handled, finish with {"type": "finish"}.\n\n'
+                        f"{incoming_message['content']}\n"
+                    )
             else:
                 prompt = self._load_manager_task_prompt()
 
@@ -108,7 +132,7 @@ class ManagerRole(BaseRole):
                 logger.debug("Manager returned non-JSON; stopping tick")
                 break
 
-            is_done = data.get("type") in ("heartbeat_ok", "finish")
+            is_done = data.get("type") in ("heartbeat_ok", "finish", "pulse_ok")
             is_continue = data.get("type") == "wait_for_results"
 
             actions = data.get("actions", [])

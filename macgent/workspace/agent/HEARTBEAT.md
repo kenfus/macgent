@@ -8,6 +8,8 @@ You have been woken up on a schedule. Check if anything needs attention.
 
 2. **Check for stale items** — did you tell the CEO you'd do something and never confirmed it was done?
 
-3. **Nothing to do?** — finish immediately with `{"type": "heartbeat_ok"}`. Do not send a Telegram message just to say hello.
+3. **Nothing to do?** — Do NOT send a Telegram message. Your ENTIRE response must be exactly this, nothing else:
+{"type": "heartbeat_ok"}
 
-When done with any actions, finish with `{"type": "heartbeat_ok"}`.
+When done with actions, your final response must be exactly this:
+{"type": "heartbeat_ok"}

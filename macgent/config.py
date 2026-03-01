@@ -67,7 +67,9 @@ class Config:
     worker_models: str = "arcee-ai/trinity-large-preview:free,qwen/qwen3-coder:free,google/gemma-3-27b-it:free"
 
     # Daemon settings
-    daemon_interval: int = 1800
+    daemon_interval: int = 1800     # agent heartbeat interval (seconds)
+    pulse_interval: int = 60        # system pulse interval (seconds)
+    workday_start_hour: int = 4     # hour at which a new workday begins (0–23)
     stale_task_minutes: int = 60
 
     # Telegram Bot
@@ -179,6 +181,8 @@ class Config:
             manager_models=os.getenv("MANAGER_MODELS", cls.manager_models),
             worker_models=os.getenv("WORKER_MODELS", cls.worker_models),
             daemon_interval=int(os.getenv("DAEMON_INTERVAL", str(cls.daemon_interval))),
+            pulse_interval=int(os.getenv("PULSE_INTERVAL", str(cls.pulse_interval))),
+            workday_start_hour=int(os.getenv("WORKDAY_START_HOUR", str(cls.workday_start_hour))),
             stale_task_minutes=int(os.getenv("STALE_TASK_MINUTES", str(cls.stale_task_minutes))),
             telegram_bot_token=tg_token_from_env or tg_token_from_cfg,
             telegram_chat_id=tg_chat_from_env or tg_chat_from_cfg,

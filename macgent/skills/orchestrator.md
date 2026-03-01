@@ -44,8 +44,9 @@ After each action batch, you receive the results before continuing. Use them:
 | Signal | When to use |
 |---|---|
 | `{"type": "wait_for_results"}` | More work to do — execute these actions and bring me back with results |
-| `{"type": "heartbeat_ok"}` | Passive wakeup — checked everything, nothing to do |
-| `{"type": "finish"}` | Active task or bootstrap — work is done AND human notified or will be after current actions are executed |
+| `{"type": "heartbeat_ok"}` | Passive heartbeat wakeup — checked everything, nothing to do |
+| `{"type": "finish"}` | Active CEO task or bootstrap — work is done AND human has been (or will be) notified via Telegram |
+| `{"type": "pulse_ok"}` | System maintenance task (e.g. memory distillation) — done, no Telegram needed |
 
 Use `wait_for_results` when you need to do work across multiple steps:
 ```json

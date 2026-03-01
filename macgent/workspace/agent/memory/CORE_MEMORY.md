@@ -2,29 +2,62 @@
 
 This describes how your memory system works.
 
-## Memory Retrieval Policy
+## What You Always Receive
 
-You always receive:
-- This core memory file
-- Longterm memory files
-- Recent daily memory logs (today + yesterday by default)
-- Top-N relevant semantic memory chunks for the current task
+Each tick your context includes (in order):
 
-Daily memory logs are stored at `{{WORKSPACE_DIR}}/memory/<YYYY-MM-DD>_MEMORY.md`.
-If you need to remember something quickly, use `append_to_daily_memory`.
+1. **Soul** — your personality and core rules (`agent/SOUL.md`)
+2. **Identity** — your name and personal traits (`agent/IDENTITY.md`)
+3. **Long-term Memory** — facts distilled from past workdays (`agent/memory/LONGTERM_MEMORY.md`)
+4. **Yesterday's Memory** — full log of the previous workday
+5. **Today's Memory** — what has happened so far this workday
+6. **Skills** — all available actions and how to use them
 
-## Memory Usage Rules
+## Workday Definition
+
+A "workday" runs from **04:00 to 04:00** (next calendar day). Activity after midnight
+but before 04:00 still counts as the *previous* workday. This matches real human schedules.
+
+## Memory Files
+
+All memory files live in `{{WORKSPACE_DIR}}/agent/memory/`:
+
+| File | How to update |
+|------|--------------|
+| `YYYY-MM-DD_MEMORY.md` | Use `append_to_daily_memory` action — always use this |
+| `LONGTERM_MEMORY.md` | Use `write_file` or `read_file` directly for permanent facts |
+| `CORE_MEMORY.md` | This file — describes the memory system itself |
+
+## Memory Rules
 
 - Use recalled memory as guidance, not absolute truth.
-- Prefer recent memory when there is a conflict.
-- If memory appears stale or wrong, continue task execution and add a corrected lesson.
+- Prefer recent memory over older entries when there is a conflict.
+- If memory appears stale or wrong, continue and add a corrected lesson.
 - Keep lessons specific and reusable.
 
-## Update Policy
+## Automatic Distillation
 
-- Add new memories to daily logs.
-- Add new lessons to daily logs.
-- Add new semantic memories to the semantic memory store.
-- Add new role memories to the role memory file.
+Each day at **04:00** the system pulse automatically:
+1. Reads the completed workday's memory log
+2. Asks the LLM: *"What from yesterday is worth remembering forever?"*
+3. Appends important facts to `LONGTERM_MEMORY.md`
+4. Deletes daily logs older than 2 workdays (you already have the distillation)
 
-At night, distill important points into `{{WORKSPACE_DIR}}/agent/memory/LONGTERM_MEMORY.md`.
+You can also update `LONGTERM_MEMORY.md` directly whenever you learn something important.
+
+## Scheduled Wakeups (Pulse Schedule)
+
+You can schedule yourself to wake at specific times by writing to
+`{{WORKSPACE_DIR}}/agent/PULSE_SCHEDULE.json`:
+
+```json
+[
+  {
+    "id": "morning-briefing",
+    "time": "09:00",
+    "description": "Check calendar and send a morning summary to the CEO"
+  }
+]
+```
+
+Each entry fires once per workday. The pulse runs every 60 seconds and checks this file.
