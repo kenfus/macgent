@@ -38,10 +38,7 @@ Finishing signals — output one of these as your ENTIRE response (raw JSON, no 
 → Passive heartbeat: nothing to do. No Telegram message.
 
 {"type": "finish"}
-→ Active task done: work is complete and human has been notified via Telegram (or will be in this same response).
-
-{"type": "pulse_ok"}
-→ System maintenance task done: no Telegram message needed.
+→ Task done: CEO task, system maintenance, or bootstrap complete. For CEO tasks, notify via Telegram. For system/maintenance tasks (e.g. memory distillation), do NOT send Telegram.
 
 You can combine actions + a finish signal in one response:
 {"actions": [{"type": "send_telegram", "params": {"text": "Done!"}}], "type": "finish"}

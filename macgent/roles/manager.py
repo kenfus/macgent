@@ -132,7 +132,7 @@ class ManagerRole(BaseRole):
                 logger.debug("Manager returned non-JSON; stopping tick")
                 break
 
-            is_done = data.get("type") in ("heartbeat_ok", "finish", "pulse_ok")
+            is_done = data.get("type") in ("heartbeat_ok", "finish")
             is_continue = data.get("type") == "wait_for_results"
 
             actions = data.get("actions", [])

@@ -1,1 +1,7 @@
-[]
+[
+  {
+    "id": "memory_distillation",
+    "time": "04:01",
+    "description": "System maintenance: Read agent/memory/{prev_workday}_MEMORY.md (previous workday log) and agent/memory/LONGTERM_MEMORY.md. If anything in the daily log is worth keeping permanently — user preferences, ongoing projects, key facts, relationships, lessons learned — update LONGTERM_MEMORY.md with write_file. Whether or not you updated it, finish with finish. Do NOT send a Telegram message."
+  }
+]

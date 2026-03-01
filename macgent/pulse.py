@@ -1,32 +1,31 @@
 """System pulse — lightweight Python-only maintenance loop.
 
 Runs every ~60 seconds alongside the agent heartbeat (which runs every 30 min).
-The pulse handles time-based maintenance tasks *without* invoking the LLM except
-indirectly: at the workday boundary it injects a wakeup task into the agent queue
-so the agent can distill its own memory using its normal read_file / write_file actions.
+The pulse handles time-based maintenance tasks without invoking the LLM.
+At the workday boundary it does Python-only cleanup (file creation / old file purge).
+All scheduled wakeup tasks (including memory distillation) are configured in
+``workspace/agent/PULSE_SCHEDULE.json`` and managed by the agent itself.
 
 ## Built-in tasks
 
-**Memory distillation at 04:01** (workday boundary + 1 min):
-  The pulse creates today's daily memory file, deletes daily files older than 2
-  workdays, and sends a "system" message to the agent asking it to read the
-  previous workday's log and update LONGTERM_MEMORY.md as it sees fit.
+**Workday transition at 04:01** (workday boundary + 1 min):
+  Creates today's daily memory file and deletes daily files older than 2 workdays.
   Fires once per workday (tracked in ``_fired_today``, reset on workday change).
 
 ## Agent-configurable schedule
 
-The agent can schedule itself to be woken at specific times by writing to
-``workspace/agent/PULSE_SCHEDULE.json``:
+The agent schedules wakeup tasks by writing to ``workspace/agent/PULSE_SCHEDULE.json``:
 
     [
       {
-        "id": "morning-briefing",
-        "time": "09:00",
-        "description": "Check calendar and send a morning summary to the CEO"
+        "id": "memory_distillation",
+        "time": "04:01",
+        "description": "Read agent/memory/{prev_workday}_MEMORY.md and update LONGTERM_MEMORY.md"
       }
     ]
 
 Each entry fires once per workday (``_fired_today`` set, reset on workday change).
+Supported template variables in description: ``{prev_workday}``, ``{today}``.
 On daemon restart within the same workday the set is empty, so tasks may re-fire —
 this is intentional; idempotent agent tasks handle it gracefully.
 """
@@ -78,9 +77,9 @@ class SystemPulse:
     # ------------------------------------------------------------------
 
     def _check_workday_maintenance(self, today: datetime.date) -> None:
-        """At 04:01 on a new workday: Python cleanup + inject distillation task."""
-        distill_key = f"distill_{today.isoformat()}"
-        if distill_key in self._fired_today:
+        """At 04:01 on a new workday: Python-only file maintenance."""
+        maintenance_key = f"maintenance_{today.isoformat()}"
+        if maintenance_key in self._fired_today:
             return  # Already handled this workday
 
         now = datetime.datetime.now()
@@ -89,39 +88,12 @@ class SystemPulse:
         if now.hour == self._workday_start_hour and now.minute < 1:
             return  # Wait until HH:01 (one minute after boundary)
 
-        self._fired_today.add(distill_key)
+        self._fired_today.add(maintenance_key)
 
         # Python-only maintenance: create today's file, purge old ones
         self.memory.ensure_today_memory_file()
         self.memory._cleanup_old_daily_files(keep_workdays=2)
         logger.info("Pulse: workday transition maintenance complete (new workday: %s)", today)
-
-        # Inject a wakeup task — the agent reads + updates its own memory
-        previous = prev_workday(self._workday_start_hour)
-        daily_path = self.memory._daily_memory_path(previous)
-        if not daily_path.exists() or not daily_path.read_text().strip():
-            logger.info("Pulse: %s is empty — skipping distillation wakeup", daily_path.name)
-            return
-
-        prev_rel = f"agent/memory/{previous.isoformat()}_MEMORY.md"
-        longterm_rel = "agent/memory/LONGTERM_MEMORY.md"
-
-        task = (
-            f"[System: workday memory distillation]\n\n"
-            f"Read `{prev_rel}` (previous workday log) and `{longterm_rel}` "
-            "(current long-term memory).\n\n"
-            "If anything in the daily log is worth keeping permanently — user preferences, "
-            "ongoing projects, key facts, relationships, lessons learned — update "
-            f"`{longterm_rel}` using write_file, then respond with "
-            '`{"type": "pulse_ok"}`.\n\n'
-            "If nothing is important, respond directly with "
-            '`{"type": "pulse_ok"}`.\n\n'
-            "Do NOT send a Telegram message for this routine maintenance task."
-        )
-
-        message_bus.enqueue_message("system", "agent", None, task)
-        message_bus.request_wake()
-        logger.info("Pulse: distillation task injected for workday %s", previous)
 
     # ------------------------------------------------------------------
     # Agent-configured schedule
@@ -144,6 +116,8 @@ class SystemPulse:
 
         now = datetime.datetime.now()
         now_hm = now.strftime("%H:%M")
+        today = current_workday(self._workday_start_hour)
+        previous = prev_workday(self._workday_start_hour)
 
         for task in tasks:
             if not isinstance(task, dict):
@@ -151,6 +125,9 @@ class SystemPulse:
             task_id = str(task.get("id", task.get("time", "")))
             fire_time = str(task.get("time", ""))
             description = str(task.get("description", "Scheduled task"))
+            # Template substitution
+            description = description.replace("{prev_workday}", previous.isoformat())
+            description = description.replace("{today}", today.isoformat())
 
             if not fire_time or not task_id:
                 continue

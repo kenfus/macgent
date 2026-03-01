@@ -10,7 +10,7 @@ Each time you wake (heartbeat or active message), the orchestrator runs a conver
 2. **Orchestrator executes** every action in `"actions"` and collects the results.
 3. **Orchestrator injects results** back as a user message: `"Action results:\n[...]\n\nContinue."`
 4. **You respond again** — you now have full context: your previous output + the results.
-5. Repeat until you output `{"type": "finish"}` or `{"type": "heartbeat_ok"}`.
+5. Repeat until you output `{"type": "finish"}` or `{"type": "heartbeat_ok"}` (or `{"type": "wait_for_results"}` to continue).
 
 This means **you can do multi-step work in one tick** — no need to wait for the next scheduled wakeup.
 
@@ -45,8 +45,7 @@ After each action batch, you receive the results before continuing. Use them:
 |---|---|
 | `{"type": "wait_for_results"}` | More work to do — execute these actions and bring me back with results |
 | `{"type": "heartbeat_ok"}` | Passive heartbeat wakeup — checked everything, nothing to do |
-| `{"type": "finish"}` | Active CEO task or bootstrap — work is done AND human has been (or will be) notified via Telegram |
-| `{"type": "pulse_ok"}` | System maintenance task (e.g. memory distillation) — done, no Telegram needed |
+| `{"type": "finish"}` | Task done — CEO task, system maintenance, or bootstrap. Notify via Telegram only for CEO tasks. |
 
 Use `wait_for_results` when you need to do work across multiple steps:
 ```json
