@@ -54,6 +54,16 @@ def dequeue_message(
         return dict(found) if found else None
 
 
+def has_pending_messages(to_role: str, from_role: str | None = None) -> bool:
+    """Return True if there is at least one matching message without consuming it."""
+    with _lock:
+        for msg in _messages:
+            if msg.get("to_role") == to_role:
+                if from_role is None or msg.get("from_role") == from_role:
+                    return True
+    return False
+
+
 def request_wake() -> None:
     _wake_event.set()
 

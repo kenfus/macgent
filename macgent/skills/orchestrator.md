@@ -45,7 +45,7 @@ After each action batch, you receive the results before continuing. Use them:
 |---|---|
 | `{"type": "wait_for_results"}` | More work to do — execute these actions and bring me back with results |
 | `{"type": "heartbeat_ok"}` | Passive wakeup — checked everything, nothing to do |
-| `{"type": "finish"}` | Active task or bootstrap — work is done, human notified |
+| `{"type": "finish"}` | Active task or bootstrap — work is done AND human notified or will be after current actions are executed |
 
 Use `wait_for_results` when you need to do work across multiple steps:
 ```json
@@ -60,3 +60,25 @@ Combine actions with `finish` when the last action IS the completion:
 ```json
 {"actions": [{"type": "send_telegram", "params": {"text": "Done!"}}], "type": "finish"}
 ```
+
+## Mid-Task Updates
+
+While working, you may receive an injected update:
+
+```
+Action results:
+[screenshot_grid] Annotated screenshot saved: screenshots/grid_123.png
+
+[UPDATE FROM VINCENZO]: Actually, just send me the weather in Basel.
+```
+Incorporate if relevant, or call re_queue_message (no params needed) to defer.
+
+**Relevant** — just incoorperate it into your workflow and continue. No action needed.
+
+**Not relevant** — defer it for after the current task:
+
+```json
+{"actions": [{"type": "re_queue_message"}]}
+```
+
+No params needed — it automatically re-queues the last received update. It will be processed on the next wake after your current task finishes.

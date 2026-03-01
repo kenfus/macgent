@@ -4,7 +4,7 @@ import logging
 import base64
 from pathlib import Path
 from macgent.models import Action
-from macgent.actions import mouse, calendar_actions
+from macgent.actions import mouse, keyboard, calendar_actions
 from macgent.actions.brave_search import brave_web_search_json
 from macgent.utils_osascript import run_osascript
 from macgent.reasoning.llm_client import build_vision_fallback_client
@@ -12,10 +12,15 @@ from macgent.reasoning.llm_client import build_vision_fallback_client
 logger = logging.getLogger("macgent.dispatcher")
 
 # Config reference — set by the role before spawning an Agent
-_dispatch_config = {"workspace_dir": ""}
+_dispatch_config = {"workspace_dir": "", "_last_ceo_message": ""}
 
 # Core skills are shipped inside the package (browser, macos, communication) — fixed
 _CORE_SKILLS_DIR = Path(__file__).parent.parent / "skills"
+
+
+def set_last_ceo_message(text: str) -> None:
+    """Store the last injected CEO message so re_queue_message can refer to it without params."""
+    _dispatch_config["_last_ceo_message"] = text
 
 
 def set_dispatch_config(config):
@@ -115,8 +120,125 @@ def dispatch(action: Action) -> str:
     p = action.params
 
     try:
-        if t == "mouse_click":
+        if t == "applescript":
+            script = p.get("script", "")
+            if not script:
+                return "ERROR: applescript needs 'script'"
+            timeout = int(p.get("timeout", 15))
+            return run_osascript(script, timeout=timeout) or "(no output)"
+
+        elif t == "mouse_click":
             return mouse.mouse_click(int(p["x"]), int(p["y"]))
+
+        elif t == "mouse_double_click":
+            return mouse.mouse_double_click(int(p["x"]), int(p["y"]))
+
+        elif t == "mouse_move":
+            return mouse.mouse_move(int(p["x"]), int(p["y"]))
+
+        elif t == "key_press":
+            key = p.get("key", "")
+            if not key:
+                return "ERROR: key_press needs 'key'"
+            return keyboard.key_press(key)
+
+        elif t == "type_string":
+            text = p.get("text", "")
+            if text == "":
+                return "ERROR: type_string needs 'text'"
+            return keyboard.type_string(text)
+
+        elif t == "screenshot":
+            from datetime import datetime
+            path = p.get("path", "")
+            if not path:
+                ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+                path = f"screenshots/{ts}.png"
+            try:
+                full_path = _resolve_workspace_path(path)
+            except ValueError:
+                return "ERROR: path must be within workspace"
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            mouse.take_screenshot(str(full_path))
+            return f"Screenshot saved: {path}"
+
+        elif t == "screenshot_grid":
+            # Take a screenshot of a region and burn an absolute-coordinate grid onto it.
+            # Read the coordinate labels in the image to know exactly where to click.
+            from datetime import datetime
+            path = p.get("path", "")
+            if not path:
+                ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+                path = f"screenshots/grid_{ts}.png"
+            try:
+                full_path = _resolve_workspace_path(path)
+            except ValueError:
+                return "ERROR: path must be within workspace"
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            mouse.take_annotated_screenshot(
+                str(full_path),
+                x=int(p.get("x", 0)),
+                y=int(p.get("y", 0)),
+                w=int(p.get("w", 0)),
+                h=int(p.get("h", 0)),
+                grid_step=int(p.get("grid_step", 35)),
+            )
+            return (
+                f"[screenshot_grid] Annotated screenshot saved: {path} "
+                f"(grid_step={p.get('grid_step', 35)}px, origin=({p.get('x', 0)},{p.get('y', 0)}))\n"
+                f"Use this path in evaluate_image: {path}"
+            )
+
+        elif t == "locate_in_app":
+            import re
+            app = p.get("app", "")
+            query = p.get("query", "")
+            if not app or not query:
+                return "ERROR: locate_in_app needs 'app' and 'query'"
+            grid_step = int(p.get("grid_step", 50))
+
+            # 1. Get window bounds
+            bounds_script = (
+                f'tell application "System Events"\n'
+                f'  tell process "{app}"\n'
+                f'    set pos to position of window 1\n'
+                f'    set sz to size of window 1\n'
+                f'    return (item 1 of pos) & "," & (item 2 of pos) & "," & (item 1 of sz) & "," & (item 2 of sz)\n'
+                f'  end tell\n'
+                f'end tell'
+            )
+            bounds_raw = run_osascript(bounds_script, timeout=10) or ""
+            nums = [int(s.strip()) for s in re.split(r'[,\s]+', bounds_raw) if s.strip().lstrip("-").isdigit()]
+            if len(nums) < 4:
+                return f"ERROR: Could not get window bounds for '{app}': {bounds_raw}"
+            win_x, win_y, win_w, win_h = nums[0], nums[1], nums[2], nums[3]
+
+            # 2. Gridded screenshot
+            from datetime import datetime
+            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+            rel_path = f"screenshots/locate_{ts}.png"
+            full_path = _resolve_workspace_path(rel_path)
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            mouse.take_annotated_screenshot(str(full_path), x=win_x, y=win_y, w=win_w, h=win_h, grid_step=grid_step)
+
+            # 3. Ask vision model to read the grid labels and return absolute coords
+            image_b64 = base64.b64encode(full_path.read_bytes()).decode("ascii")
+            prompt = (
+                f"This image has a red coordinate grid burned onto it. "
+                f"Every grid line is labeled with its ABSOLUTE screen coordinate. "
+                f"Find: {query}. "
+                f"Read the grid labels nearest the element's center and return its absolute coordinates. "
+                f"Reply with ONLY: x=<number>, y=<number>"
+            )
+            client = _build_dispatch_vision_client()
+            raw = client.chat_with_image(prompt=prompt, image_base64=image_b64, max_tokens=80)
+
+            # 4. Parse x=N, y=N from response
+            m = re.search(r'x\s*[=:]\s*(\d+).*?y\s*[=:]\s*(\d+)', raw, re.IGNORECASE | re.DOTALL)
+            if m:
+                abs_x, abs_y = int(m.group(1)), int(m.group(2))
+                return json.dumps({"x": abs_x, "y": abs_y, "screenshot": rel_path})
+            return json.dumps({"x": None, "y": None, "screenshot": rel_path, "raw": raw})
 
         elif t == "open_app":
             app = p["app"]
@@ -516,6 +638,16 @@ def dispatch(action: Action) -> str:
             seconds = float(p.get("seconds", 2))
             time.sleep(seconds)
             return f"Waited {seconds}s"
+
+        elif t == "re_queue_message":
+            text = p.get("text", "").strip() or _dispatch_config.get("_last_ceo_message", "").strip()
+            if not text:
+                return "ERROR: re_queue_message — no pending CEO message to defer"
+            from macgent import message_bus
+            message_bus.enqueue_message("ceo", "agent", task_id=None, content=text)
+            message_bus.request_wake()
+            _dispatch_config["_last_ceo_message"] = ""
+            return "Message re-queued — will be handled after the current task."
 
         elif t == "done":
             return "TASK_COMPLETE"

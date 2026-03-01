@@ -7,6 +7,39 @@ IMPORTANT: Respond with ONLY valid JSON. No other text before or after the JSON.
 You MUST respond with one of these actions:
 
 ### macOS Actions
+applescript: Run AppleScript to control macOS apps (Finder, Spotify, System Events, Mail, etc.)
+  {"reasoning": "...", "action": {"type": "applescript", "params": {"script": "tell application \"Spotify\" to play"}}}
+  {"reasoning": "...", "action": {"type": "applescript", "params": {"script": "tell application \"System Events\" to keystroke \"c\" using command down"}}}
+
+### Screen & Input
+
+mouse_click: Click at screen coordinates
+  {"reasoning": "...", "action": {"type": "mouse_click", "params": {"x": 54, "y": 43}}}
+
+mouse_double_click: Double-click at screen coordinates
+  {"reasoning": "...", "action": {"type": "mouse_double_click", "params": {"x": 200, "y": 300}}}
+
+mouse_move: Move mouse to coordinates
+  {"reasoning": "...", "action": {"type": "mouse_move", "params": {"x": 100, "y": 200}}}
+
+key_press: Press a keyboard key (return, escape, tab, space, arrow-left, arrow-right, arrow-up, arrow-down, f1–f12)
+  {"reasoning": "...", "action": {"type": "key_press", "params": {"key": "return"}}}
+
+type_string: Type a string via keyboard simulation
+  {"reasoning": "...", "action": {"type": "type_string", "params": {"text": "Hello World"}}}
+
+screenshot: Take a screenshot, saved to workspace/screenshots/. Follow with evaluate_image to analyze.
+  {"reasoning": "...", "action": {"type": "screenshot", "params": {}}}
+  {"reasoning": "...", "action": {"type": "screenshot", "params": {"path": "screenshots/ui_state.png"}}}
+
+locate_in_app: Find a UI element in any app and return its exact absolute screen coordinates. Automatically gets window bounds, takes a gridded screenshot, and uses vision to read coordinates. Returns {"x": N, "y": N} — pass directly to mouse_click. PREFER this over manual screenshots when clicking.
+  {"reasoning": "...", "action": {"type": "locate_in_app", "params": {"app": "iPhone Mirroring", "query": "Roman Studer chat row center"}}}
+  {"reasoning": "...", "action": {"type": "locate_in_app", "params": {"app": "Spotify", "query": "Play button", "grid_step": 30}}}
+
+screenshot_grid: Take a screenshot of a screen region with an absolute coordinate grid burned in. Use when you need to know EXACTLY where to click — labels show real screen coordinates to pass directly to mouse_click.
+  {"reasoning": "...", "action": {"type": "screenshot_grid", "params": {"x": 1124, "y": 348, "w": 312, "h": 694}}}
+  {"reasoning": "...", "action": {"type": "screenshot_grid", "params": {"x": 1124, "y": 900, "w": 312, "h": 142, "grid_step": 30}}}
+
 open_app: Open application
   {"reasoning": "...", "action": {"type": "open_app", "params": {"app": "Calendar"}}}
 
@@ -56,7 +89,7 @@ Refer to your Notion skill doc for property names, status values, and filter syn
 
 ### Vision Utility
 evaluate_image: Send an image to the configured vision model chain (useful when text model is not multimodal)
-  {"reasoning": "...", "action": {"type": "evaluate_image", "params": {"path": "workspace/screenshots/page.png", "prompt": "Describe UI elements and blockers"}}}
+  {"reasoning": "...", "action": {"type": "evaluate_image", "params": {"path": "screenshots/page.png", "prompt": "Describe UI elements and blockers"}}}
   {"reasoning": "...", "action": {"type": "evaluate_image", "params": {"image_base64": "...", "media_type": "image/png", "prompt": "Extract key text"}}}
 
 ### Search Utility

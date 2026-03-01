@@ -10,7 +10,7 @@ import datetime
 import logging
 from pathlib import Path
 
-from macgent.actions.dispatcher import dispatch, set_dispatch_config
+from macgent.actions.dispatcher import dispatch, set_dispatch_config, set_last_ceo_message
 from macgent import message_bus
 from macgent.models import Action
 from macgent.roles.base import BaseRole
@@ -66,6 +66,11 @@ class ManagerRole(BaseRole):
                 logger.info("Manager loaded 1 CEO message from queue (id=%s)", ceo_message.get("id"))
                 ts = datetime.datetime.now().strftime("%H:%M")
                 self.memory.append_to_daily_memory(f"**[{ts}] CEO:**\n{ceo_message['content']}\n")
+                # Re-signal wake if more messages are waiting so the daemon loop
+                # processes them immediately instead of waiting for the next heartbeat.
+                if message_bus.has_pending_messages("agent", from_role="ceo"):
+                    message_bus.request_wake()
+                    logger.info("More CEO messages pending — re-signalling wake")
             else:
                 logger.info("Active wake received but no queued CEO message found")
 
@@ -133,12 +138,19 @@ class ManagerRole(BaseRole):
                 break
 
             conversation.append({"role": "assistant", "content": response})
-            conversation.append(
-                {
-                    "role": "user",
-                    "content": "Action results:\n" + "\n".join(results) + "\n\nContinue.",
-                }
-            )
+
+            user_content = "Action results:\n" + "\n".join(results)
+
+            # Check for a new CEO message that arrived mid-task and inject it.
+            mid_task_msg = message_bus.dequeue_message("agent", from_role="ceo")
+            if mid_task_msg:
+                set_last_ceo_message(mid_task_msg["content"])
+                user_content += (
+                    f"\n\n[UPDATE FROM VINCENZO]: {mid_task_msg['content']}\n"
+                    "Incorporate if relevant, or call re_queue_message (no params needed) to defer."
+                )
+
+            conversation.append({"role": "user", "content": user_content + "\n\nContinue."})
 
         return did_work
 

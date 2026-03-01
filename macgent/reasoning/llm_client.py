@@ -10,6 +10,11 @@ import httpx
 logger = logging.getLogger("macgent.llm")
 
 
+class ProviderError(RuntimeError):
+    """Provider returned 200 OK but with no valid response body (e.g. no choices).
+    Treated as retryable — the model may be briefly overloaded."""
+
+
 class LLMClient:
     """Minimal LLM client supporting OpenAI and Anthropic APIs."""
 
@@ -81,6 +86,9 @@ class LLMClient:
         resp = self.http.post(url, json=payload, headers=headers)
         resp.raise_for_status()
         data = resp.json()
+        if "choices" not in data:
+            err = data.get("error", data)
+            raise ProviderError(f"No choices in response from {self.model}: {err}")
         return data["choices"][0]["message"]["content"]
 
     def _call_anthropic(self, messages: list, system: Optional[str], max_tokens: int, temperature: float) -> str:
@@ -266,7 +274,7 @@ class FallbackLLMClient:
             except Exception as e:
                 last_error = e
                 status = self._error_status(e)
-                is_retryable = status in self.retry_statuses
+                is_retryable = status in self.retry_statuses or isinstance(e, ProviderError)
                 logger.warning(
                     "%s_fail alias=%s model=%s status=%s attempt=%s error=%s",
                     modality,
