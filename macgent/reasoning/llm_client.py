@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import os
@@ -8,6 +9,23 @@ from typing import Optional, Callable
 import httpx
 
 logger = logging.getLogger("macgent.llm")
+
+# Cache last-seen system-prompt hash per offer alias.
+# Full content is logged only on first appearance or when it changes.
+_system_hash_cache: dict[str, str] = {}
+
+
+def _sys_fingerprint(alias: str, system: str | None) -> tuple[str, bool]:
+    """Return (log_text, changed) for the system prompt."""
+    if not system:
+        return "(empty)", False
+    h = hashlib.md5(system.encode()).hexdigest()[:8]
+    summary = f"hash={h} len={len(system)}"
+    if _system_hash_cache.get(alias) == h:
+        return f"[UNCHANGED {summary}]", False
+    _system_hash_cache[alias] = h
+    preview = system[:120].replace("\n", " ")
+    return f"[CHANGED {summary}]\n{system}\n━━━ END SYSTEM ━━━", True
 
 
 class ProviderError(RuntimeError):
@@ -293,24 +311,24 @@ class FallbackLLMClient:
 
         raise RuntimeError(f"Offer {offer.alias} failed after retries: {last_error}")
 
-    def _debug_log_text_io(
+    def _log_text_io(
         self,
         offer: LLMOffer,
         messages: list[dict],
         system: Optional[str],
         response: Optional[str] = None,
     ) -> None:
-        if not logger.isEnabledFor(logging.DEBUG):
+        if not logger.isEnabledFor(logging.INFO):
             return
         if response is None:
+            sys_text, _ = _sys_fingerprint(offer.alias, system)
             lines: list[str] = [
                 "LLM_PROMPT_BEGIN",
                 f"alias: {offer.alias}",
                 f"model: {offer.model}",
                 "",
-                "━━━ CONTEXT (system) ━━━",
-                "",
-                (system or "(empty)"),
+                "━━━ SYSTEM ━━━",
+                sys_text,
             ]
             # First message = task prompt (bootstrap / heartbeat / CEO message)
             if messages:
@@ -325,26 +343,26 @@ class FallbackLLMClient:
                 rendered = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, indent=2)
                 lines.extend(["", f"━━━ TURN {idx} ({role}) ━━━", "", rendered])
             lines.extend(["", "LLM_PROMPT_END"])
-            logger.debug("\n".join(lines))
+            logger.info("\n".join(lines))
         else:
-            logger.debug(
+            logger.info(
                 "LLM_RESPONSE_BEGIN\nalias: %s\nmodel: %s\n\n%s\n\nLLM_RESPONSE_END",
                 offer.alias,
                 offer.model,
                 response or "",
             )
 
-    def _debug_log_vision_io(
+    def _log_vision_io(
         self,
         offer: LLMOffer,
         prompt: str,
         image_base64: str,
         response: Optional[str] = None,
     ) -> None:
-        if not logger.isEnabledFor(logging.DEBUG):
+        if not logger.isEnabledFor(logging.INFO):
             return
         if response is None:
-            logger.debug(
+            logger.info(
                 "VISION_PROMPT_BEGIN\nalias=%s\nmodel=%s\nprompt:\n%s\nimage_bytes_b64=%s\nVISION_PROMPT_END",
                 offer.alias,
                 offer.model,
@@ -352,7 +370,7 @@ class FallbackLLMClient:
                 len(image_base64),
             )
         else:
-            logger.debug(
+            logger.info(
                 "VISION_RESPONSE_BEGIN\nalias=%s\nmodel=%s\ncontent:\n%s\nVISION_RESPONSE_END",
                 offer.alias,
                 offer.model,
@@ -364,13 +382,13 @@ class FallbackLLMClient:
         last_error = None
         for offer, client in zip(self.offers, self.clients):
             try:
-                self._debug_log_text_io(offer, messages, system)
+                self._log_text_io(offer, messages, system)
                 result = self._run_with_retries(
                     offer,
                     lambda: client.chat(messages, system=system, max_tokens=max_tokens, temperature=temperature),
                     "llm",
                 )
-                self._debug_log_text_io(offer, messages, system, response=result)
+                self._log_text_io(offer, messages, system, response=result)
                 return result
             except Exception as e:
                 last_error = e
@@ -388,7 +406,7 @@ class FallbackLLMClient:
         last_error = None
         for offer, client in zip(self.offers, self.clients):
             try:
-                self._debug_log_vision_io(offer, prompt, image_base64)
+                self._log_vision_io(offer, prompt, image_base64)
                 result = self._run_with_retries(
                     offer,
                     lambda: client.chat_with_image(
@@ -400,7 +418,7 @@ class FallbackLLMClient:
                     ),
                     "vision",
                 )
-                self._debug_log_vision_io(offer, prompt, image_base64, response=result)
+                self._log_vision_io(offer, prompt, image_base64, response=result)
                 return result
             except Exception as e:
                 last_error = e

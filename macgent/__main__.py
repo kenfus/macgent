@@ -152,30 +152,41 @@ def _setup_workspace(workspace_dir: str):
                 shutil.copy2(src, dst)
 
 
-def _setup_logging(log_file: str, debug: bool = False):
+class _ExcludeLLMBlocks(logging.Filter):
+    """Keep LLM prompt/response blocks out of the console — they go to file only."""
+    _MARKERS = ("LLM_PROMPT_BEGIN", "LLM_RESPONSE_BEGIN", "VISION_PROMPT_BEGIN", "VISION_RESPONSE_BEGIN")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not any(m in msg for m in self._MARKERS)
+
+
+def _setup_logging(log_file: str, debug: bool = False, show_llm: bool = False):
     """Configure logging with INFO by default and DEBUG only when requested."""
     fmt = "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
     root = logging.getLogger()
     root.handlers.clear()
     root.setLevel(logging.DEBUG if debug else logging.INFO)
 
-    # Console: always INFO+ so normal runs stay readable.
+    # Console: INFO+ but skip multi-line LLM prompt/response blobs (unless --show-llm).
     console = logging.StreamHandler()
     console.setLevel(logging.INFO)
     console.setFormatter(logging.Formatter(fmt))
+    if not show_llm:
+        console.addFilter(_ExcludeLLMBlocks())
     root.addHandler(console)
 
-    # File: INFO+ by default, DEBUG+ only when --debug is passed.
+    # File: full content at INFO+ (DEBUG+ with --debug). LLM blocks included.
     Path(log_file).parent.mkdir(parents=True, exist_ok=True)
     fh = logging.FileHandler(log_file, encoding="utf-8")
     fh.setLevel(logging.DEBUG if debug else logging.INFO)
     fh.setFormatter(logging.Formatter(fmt))
     root.addHandler(fh)
 
-    # Suppress noisy third-party HTTP loggers unless debugging.
-    if not debug:
-        for noisy in ("httpx", "httpcore"):
-            logging.getLogger(noisy).setLevel(logging.WARNING)
+    # Silence third-party HTTP loggers entirely — successes are noise, failures are
+    # already caught and re-logged as ERROR by our own code (telegram_bot, llm_client).
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.ERROR)
 
 
 def _resolve_daily_log_path(log_file: str) -> str:
@@ -211,10 +222,11 @@ def main():
 
     raw_args = sys.argv[1:]
     debug_enabled = ("--debug" in raw_args) or (config.get_logging_level() == "DEBUG")
-    cli_args = [a for a in raw_args if a != "--debug"]
+    show_llm_enabled = "--show-llm" in raw_args
+    cli_args = [a for a in raw_args if a not in ("--debug", "--show-llm")]
 
     # Set up logging (file + console) now that we know the log path
-    _setup_logging(config.log_file, debug=debug_enabled)
+    _setup_logging(config.log_file, debug=debug_enabled, show_llm=show_llm_enabled)
 
     if not config.reasoning_api_key:
         print("ERROR: Set OPENROUTER_API_KEY (or REASONING_API_KEY) in .env file")
@@ -244,6 +256,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(prog="macgent", description="macOS automation multi-agent system")
     parser.add_argument("--debug", action="store_true", help="Enable DEBUG logging (includes LLM prompts/responses).")
+    parser.add_argument("--show-llm", action="store_true", help="Print LLM prompt/response blocks to the terminal (always written to log file).")
     sub = parser.add_subparsers(dest="command")
 
     # macgent daemon — start heartbeat loop
@@ -327,9 +340,18 @@ def _sync_daemon_loop(config, interval, once):
     memory = MemoryManager(config)
     manager = ManagerRole(config, None, memory)
 
+    # After bootstrap is done, skip the very first tick so the agent starts idle
+    # and only reacts to incoming messages or the next scheduled interval.
+    skip_first_tick = manager._is_bootstrapped()
+    if skip_first_tick:
+        print("Agent already bootstrapped — starting idle, waiting for first signal or interval.")
+
     try:
         while True:
-            manager.tick()
+            if skip_first_tick:
+                skip_first_tick = False
+            else:
+                manager.tick()
 
             if once:
                 break
