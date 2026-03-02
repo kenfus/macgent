@@ -26,8 +26,30 @@ The agent schedules wakeup tasks by writing to ``workspace/agent/PULSE_SCHEDULE.
 
 Each entry fires once per workday (``_fired_today`` set, reset on workday change).
 Supported template variables in description: ``{prev_workday}``, ``{today}``.
-On daemon restart within the same workday the set is empty, so tasks may re-fire —
-this is intentional; idempotent agent tasks handle it gracefully.
+
+## State persistence
+
+``workspace/agent/PULSE_STATE.json`` records what fired this workday and whether
+the agent completed each task. This file is written by the pulse and updated by
+the manager when a system task finishes.  On daemon restart the pulse reads this
+file to restore ``_fired_today``, preventing double-fires within the same workday.
+
+Example state file::
+
+    {
+      "workday": "2026-03-02",
+      "tasks": {
+        "_maintenance": {"fired_at": "2026-03-02 04:01", "status": "done"},
+        "memory_distillation": {
+          "fired_at": "2026-03-02 04:03",
+          "status": "completed",
+          "updated_at": "2026-03-02 04:07"
+        }
+      }
+    }
+
+Task statuses written by pulse: ``"injected"`` (task sent to agent), ``"done"`` (Python-only task).
+Task statuses written by manager: ``"completed"`` (agent finished with finish), ``"timeout"`` (no finish after MAX_TURNS).
 """
 
 from __future__ import annotations
@@ -43,6 +65,7 @@ from macgent.memory import current_workday, prev_workday
 logger = logging.getLogger("macgent.pulse")
 
 _SCHEDULE_RELATIVE_PATH = "agent/PULSE_SCHEDULE.json"
+STATE_RELATIVE_PATH = "agent/PULSE_STATE.json"
 
 
 class SystemPulse:
@@ -52,9 +75,57 @@ class SystemPulse:
         self.config = config
         self.memory = memory
         self._workday_start_hour: int = int(getattr(config, "workday_start_hour", 4))
+        self._state_path = Path(config.workspace_dir) / STATE_RELATIVE_PATH
         # Track which task IDs already fired this workday (resets on workday change)
         self._fired_today: set[str] = set()
         self._fired_workday: datetime.date | None = None
+        # Restore fired set from persisted state so restarts don't double-fire
+        self._load_state()
+
+    # ------------------------------------------------------------------
+    # State persistence
+    # ------------------------------------------------------------------
+
+    def _load_state(self) -> None:
+        """Restore _fired_today from disk if the state file is for the current workday."""
+        today = current_workday(self._workday_start_hour)
+        try:
+            if not self._state_path.exists():
+                return
+            data = json.loads(self._state_path.read_text())
+            if data.get("workday") == today.isoformat():
+                self._fired_workday = today
+                self._fired_today = set(data.get("tasks", {}).keys())
+                logger.info(
+                    "Pulse: restored state for workday %s — already fired: %s",
+                    today, self._fired_today,
+                )
+        except Exception as e:
+            logger.warning("Pulse: could not load state: %s", e)
+
+    def _update_task_state(self, task_id: str, status: str, **extra) -> None:
+        """Update a single task entry in the state file."""
+        today = current_workday(self._workday_start_hour)
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        try:
+            state: dict = {}
+            if self._state_path.exists():
+                state = json.loads(self._state_path.read_text())
+            # Reset state if workday changed
+            if state.get("workday") != today.isoformat():
+                state = {"workday": today.isoformat(), "tasks": {}}
+            tasks: dict = state.setdefault("tasks", {})
+            if status == "injected" or status == "done":
+                tasks[task_id] = {"fired_at": now_str, "status": status, **extra}
+            else:
+                # Completion update from manager — preserve fired_at
+                tasks.setdefault(task_id, {}).update(
+                    {"status": status, "updated_at": now_str, **extra}
+                )
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            self._state_path.write_text(json.dumps(state, indent=2))
+        except Exception as e:
+            logger.warning("Pulse: could not update state for task '%s': %s", task_id, e)
 
     # ------------------------------------------------------------------
     # Main tick
@@ -78,7 +149,7 @@ class SystemPulse:
 
     def _check_workday_maintenance(self, today: datetime.date) -> None:
         """At 04:01 on a new workday: Python-only file maintenance."""
-        maintenance_key = f"maintenance_{today.isoformat()}"
+        maintenance_key = "_maintenance"
         if maintenance_key in self._fired_today:
             return  # Already handled this workday
 
@@ -89,6 +160,7 @@ class SystemPulse:
             return  # Wait until HH:01 (one minute after boundary)
 
         self._fired_today.add(maintenance_key)
+        self._update_task_state(maintenance_key, "done")
 
         # Python-only maintenance: create today's file, purge old ones
         self.memory.ensure_today_memory_file()
@@ -135,11 +207,13 @@ class SystemPulse:
                 continue
             if now_hm >= fire_time:
                 self._fired_today.add(task_id)
+                self._update_task_state(task_id, "injected")
                 logger.info("Pulse: firing scheduled task '%s' at %s", task_id, now_hm)
+                # Embed task_id in content so manager can write completion status back
                 message_bus.enqueue_message(
                     from_role="system",
                     to_role="agent",
                     task_id=None,
-                    content=f"[Scheduled at {fire_time}] {description}",
+                    content=f"[task_id={task_id}][Scheduled at {fire_time}] {description}",
                 )
                 message_bus.request_wake()

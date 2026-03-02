@@ -7,13 +7,16 @@ Python only provides context, executes returned actions, and handles loop contro
 from __future__ import annotations
 
 import datetime
+import json
 import logging
+import re
 from pathlib import Path
 
 from macgent.actions.dispatcher import dispatch, set_dispatch_config, set_last_ceo_message
 from macgent import message_bus
 from macgent.models import Action
 from macgent.roles.base import BaseRole
+from macgent.pulse import STATE_RELATIVE_PATH
 
 logger = logging.getLogger("macgent.roles.manager")
 MAX_TURNS = 15
@@ -50,6 +53,27 @@ class ManagerRole(BaseRole):
             return p.read_text()
         return "Run manager heartbeat based on current board/messages and respond with heartbeat_ok if nothing to do."
 
+    @staticmethod
+    def _extract_pulse_task_id(content: str) -> str | None:
+        """Parse [task_id=X] marker injected by the pulse into system messages."""
+        m = re.match(r"\[task_id=([^\]]+)\]", content or "")
+        return m.group(1) if m else None
+
+    def _update_pulse_state(self, task_id: str, status: str) -> None:
+        """Write task completion status back to PULSE_STATE.json."""
+        state_path = Path(self.config.workspace_dir) / STATE_RELATIVE_PATH
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        try:
+            state: dict = {}
+            if state_path.exists():
+                state = json.loads(state_path.read_text())
+            state.setdefault("tasks", {}).setdefault(task_id, {}).update(
+                {"status": status, "updated_at": now_str}
+            )
+            state_path.write_text(json.dumps(state, indent=2))
+        except Exception as e:
+            logger.warning("Manager: could not update pulse state for '%s': %s", task_id, e)
+
     def tick(self) -> bool:
         logger.info("Manager tick starting")
         bootstrapped = self._is_bootstrapped()
@@ -62,6 +86,7 @@ class ManagerRole(BaseRole):
         # CEO messages (from Telegram) take priority over system messages (from pulse).
         incoming_message = None
         incoming_from = None
+        system_task_id: str | None = None  # pulse task ID, for completion tracking
         if is_active_wake:
             msg = message_bus.dequeue_message("agent", from_role="ceo")
             if msg:
@@ -70,6 +95,7 @@ class ManagerRole(BaseRole):
                 msg = message_bus.dequeue_message("agent", from_role="system")
                 if msg:
                     incoming_message, incoming_from = msg, "system"
+                    system_task_id = self._extract_pulse_task_id(msg.get("content", ""))
 
             if incoming_message:
                 logger.info(
@@ -155,6 +181,8 @@ class ManagerRole(BaseRole):
 
             # If the LLM combined actions + done signal, honour both
             if is_done:
+                if system_task_id:
+                    self._update_pulse_state(system_task_id, "completed")
                 return did_work
 
             # Break only if no actions AND no explicit continue signal
@@ -176,6 +204,9 @@ class ManagerRole(BaseRole):
 
             conversation.append({"role": "user", "content": user_content + "\n\nContinue."})
 
+        # Loop exited without a finish signal — record timeout for pulse tasks
+        if system_task_id:
+            self._update_pulse_state(system_task_id, "timeout")
         return did_work
 
     def _execute_action(self, action_type: str, params: dict) -> str:
