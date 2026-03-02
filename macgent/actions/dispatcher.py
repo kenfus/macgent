@@ -40,10 +40,10 @@ def set_dispatch_config(config):
     _dispatch_config["browser_reasoning_model"] = getattr(config, "browser_reasoning_model", "")
     _dispatch_config["browser_vision_model"] = getattr(config, "browser_vision_model", "")
     _dispatch_config["browser_headed"] = getattr(config, "browser_headed", False)
-    _dispatch_config["text_model_primary"] = getattr(config, "text_model_primary", "openrouter_primary")
-    _dispatch_config["text_model_fallbacks"] = getattr(config, "text_model_fallbacks", "openrouter_trinity,kilo_glm5")
-    _dispatch_config["vision_model_primary"] = getattr(config, "vision_model_primary", "openrouter_vision_primary")
-    _dispatch_config["vision_model_fallbacks"] = getattr(config, "vision_model_fallbacks", "openrouter_nemotron_vl")
+    _dispatch_config["text_model_primary"] = getattr(config, "text_model_primary", "")
+    _dispatch_config["text_model_fallbacks"] = getattr(config, "text_model_fallbacks", "")
+    _dispatch_config["vision_model_primary"] = getattr(config, "vision_model_primary", "")
+    _dispatch_config["vision_model_fallbacks"] = getattr(config, "vision_model_fallbacks", "")
     _dispatch_config["vision_model"] = getattr(config, "vision_model", "")
     _dispatch_config["model_config"] = getattr(config, "model_config", {})
     _dispatch_config["error_policy"] = getattr(config, "get_error_policy", lambda: {})()
@@ -96,9 +96,9 @@ def _build_dispatch_vision_client():
 
         @staticmethod
         def get_vision_offer_chain():
-            primary = _dispatch_config.get("vision_model_primary", "openrouter_vision_primary")
+            primary = _dispatch_config.get("vision_model_primary", "")
             fallbacks = [x.strip() for x in _dispatch_config.get("vision_model_fallbacks", "").split(",") if x.strip()]
-            return [primary, *fallbacks]
+            return [x for x in [primary, *fallbacks] if x]
 
         @staticmethod
         def get_error_policy():
@@ -464,10 +464,10 @@ def dispatch(action: Action) -> str:
                     browser_reasoning_model = _dispatch_config.get("browser_reasoning_model", _dispatch_config.get("reasoning_model", ""))
                     browser_vision_model = _dispatch_config.get("browser_vision_model", _dispatch_config.get("vision_model", ""))
                     browser_headed = bool(_dispatch_config.get("browser_headed", False))
-                    text_model_primary = _dispatch_config.get("text_model_primary", "openrouter_primary")
-                    text_model_fallbacks = _dispatch_config.get("text_model_fallbacks", "openrouter_trinity,kilo_glm5")
-                    vision_model_primary = _dispatch_config.get("vision_model_primary", "openrouter_vision_primary")
-                    vision_model_fallbacks = _dispatch_config.get("vision_model_fallbacks", "openrouter_nemotron_vl")
+                    text_model_primary = _dispatch_config.get("text_model_primary", "")
+                    text_model_fallbacks = _dispatch_config.get("text_model_fallbacks", "")
+                    vision_model_primary = _dispatch_config.get("vision_model_primary", "")
+                    vision_model_fallbacks = _dispatch_config.get("vision_model_fallbacks", "")
                     vision_model = _dispatch_config.get("browser_vision_model", _dispatch_config.get("vision_model", ""))
                     model_config = _dispatch_config.get("model_config", {})
                     kilo_api_base = _dispatch_config.get("kilo_api_base", "")
@@ -488,18 +488,18 @@ def dispatch(action: Action) -> str:
 
                     @staticmethod
                     def get_browser_text_offer_chain():
-                        primary = _dispatch_config.get("browser_reasoning_model") or _dispatch_config.get("text_model_primary", "openrouter_primary")
+                        primary = _dispatch_config.get("browser_reasoning_model") or _dispatch_config.get("text_model_primary", "")
                         fallbacks = [x.strip() for x in _dispatch_config.get("text_model_fallbacks", "").split(",") if x.strip()]
-                        return [primary, *fallbacks]
+                        return [x for x in [primary, *fallbacks] if x]
 
                     @staticmethod
                     def get_browser_vision_offer_chain():
-                        primary = _dispatch_config.get("browser_vision_model") or _dispatch_config.get("vision_model_primary", "openrouter_vision_primary")
+                        primary = _dispatch_config.get("browser_vision_model") or _dispatch_config.get("vision_model_primary", "")
                         fallbacks = [x.strip() for x in _dispatch_config.get("vision_model_fallbacks", "").split(",") if x.strip()]
                         kilo_model = _dispatch_config.get("kilo_browser_vision_model", "")
                         if kilo_model:
                             fallbacks.append(kilo_model)
-                        return [primary, *fallbacks]
+                        return [x for x in [primary, *fallbacks] if x]
 
                 return run_browser_task(
                     _Cfg(),

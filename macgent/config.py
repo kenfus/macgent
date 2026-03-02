@@ -25,11 +25,11 @@ class Config:
     vision_model: str = "nvidia/nemotron-nano-12b-v2-vl:free"
     vision_api_type: str = "openai"
 
-    # Unified model routing aliases (can be overridden by macgent_config.json)
-    text_model_primary: str = "openrouter_primary"
-    text_model_fallbacks: str = "openrouter_trinity,kilo_glm5"
-    vision_model_primary: str = "openrouter_vision_primary"
-    vision_model_fallbacks: str = "openrouter_nemotron_vl"
+    # Unified model routing aliases (must be defined in macgent_config.json routes)
+    text_model_primary: str = ""
+    text_model_fallbacks: str = ""
+    vision_model_primary: str = ""
+    vision_model_fallbacks: str = ""
 
     # Structured model config file
     model_config_path: str = ""
@@ -46,8 +46,8 @@ class Config:
     browser_mode: str = "agent_browser"
     browser_fallback_threshold: int = 3
     captcha_auto_attempts: int = 1
-    browser_reasoning_model: str = "arcee-ai/trinity-large-preview:free"
-    browser_vision_model: str = "nvidia/nemotron-nano-12b-v2-vl:free"
+    browser_reasoning_model: str = ""
+    browser_vision_model: str = ""
     browser_headed: bool = False
 
     # Optional last-resort provider
@@ -127,6 +127,12 @@ class Config:
         model_cfg = cls._load_model_config(cfg_path)
         runtime_cfg = model_cfg.get("runtime", {})
         integrations_cfg = model_cfg.get("integrations", {})
+        routes_cfg = model_cfg.get("routes", {})
+        text_route_cfg = routes_cfg.get("text", {})
+        vision_route_cfg = routes_cfg.get("vision", {})
+        browser_route_cfg = routes_cfg.get("browser", {})
+        browser_text_route_cfg = browser_route_cfg.get("text", {})
+        browser_vision_route_cfg = browser_route_cfg.get("vision", {})
         workspace_from_cfg = str(runtime_cfg.get("workspace_dir", "")).strip()
         log_from_cfg = str(runtime_cfg.get("log_file", "")).strip()
         tg_token_env = str(integrations_cfg.get("telegram_bot_token_env", "TELEGRAM_BOT_TOKEN")).strip() or "TELEGRAM_BOT_TOKEN"
@@ -135,6 +141,50 @@ class Config:
         tg_chat_from_cfg = str(integrations_cfg.get("telegram_chat_id", "")).strip()
         tg_token_from_env = os.getenv(tg_token_env, "").strip()
         tg_chat_from_env = os.getenv(tg_chat_env, "").strip()
+
+        # Routing is defined in macgent_config.json.
+        text_route_primary = str(text_route_cfg.get("primary", "")).strip()
+        vision_route_primary = str(vision_route_cfg.get("primary", "")).strip()
+        browser_text_route_primary = str(browser_text_route_cfg.get("primary", "")).strip()
+        browser_vision_route_primary = str(browser_vision_route_cfg.get("primary", "")).strip()
+
+        text_model_primary = text_route_primary
+        vision_model_primary = vision_route_primary
+
+        text_route_fallbacks = text_route_cfg.get("fallbacks", None)
+        vision_route_fallbacks = vision_route_cfg.get("fallbacks", None)
+        if isinstance(text_route_fallbacks, list):
+            text_model_fallbacks = ",".join(str(x).strip() for x in text_route_fallbacks if str(x).strip())
+        else:
+            text_model_fallbacks = ""
+        if isinstance(vision_route_fallbacks, list):
+            vision_model_fallbacks = ",".join(str(x).strip() for x in vision_route_fallbacks if str(x).strip())
+        else:
+            vision_model_fallbacks = ""
+
+        browser_reasoning_model = (
+            browser_text_route_primary
+            or text_model_primary
+        )
+        browser_vision_model = (
+            browser_vision_route_primary
+            or vision_model_primary
+        )
+
+        missing_routes = []
+        if not text_model_primary:
+            missing_routes.append("routes.text.primary")
+        if not vision_model_primary:
+            missing_routes.append("routes.vision.primary")
+        if not browser_reasoning_model:
+            missing_routes.append("routes.browser.text.primary (or routes.text.primary)")
+        if not browser_vision_model:
+            missing_routes.append("routes.browser.vision.primary (or routes.vision.primary)")
+        if missing_routes:
+            raise RuntimeError(
+                "Missing required model routes in macgent_config.json: "
+                + ", ".join(missing_routes)
+            )
 
         return cls(
             macgent_name=cls.macgent_name,
@@ -146,22 +196,10 @@ class Config:
             vision_api_key=vision_key,
             vision_model=os.getenv("VISION_MODEL", cls.vision_model),
             vision_api_type=os.getenv("VISION_API_TYPE", cls.vision_api_type),
-            text_model_primary=os.getenv(
-                "TEXT_MODEL_PRIMARY",
-                cls._route_value(model_cfg, "text", "primary", cls.text_model_primary),
-            ),
-            text_model_fallbacks=os.getenv(
-                "TEXT_MODEL_FALLBACKS",
-                ",".join(cls._route_value(model_cfg, "text", "fallbacks", cls._split_csv(cls.text_model_fallbacks))),
-            ),
-            vision_model_primary=os.getenv(
-                "VISION_MODEL_PRIMARY",
-                cls._route_value(model_cfg, "vision", "primary", cls.vision_model_primary),
-            ),
-            vision_model_fallbacks=os.getenv(
-                "VISION_MODEL_FALLBACKS",
-                ",".join(cls._route_value(model_cfg, "vision", "fallbacks", cls._split_csv(cls.vision_model_fallbacks))),
-            ),
+            text_model_primary=text_model_primary,
+            text_model_fallbacks=text_model_fallbacks,
+            vision_model_primary=vision_model_primary,
+            vision_model_fallbacks=vision_model_fallbacks,
             model_config_path=cfg_path,
             model_config=model_cfg,
             max_steps=int(os.getenv("MAX_STEPS", str(cls.max_steps))),
@@ -170,8 +208,8 @@ class Config:
             browser_mode=os.getenv("BROWSER_MODE", "agent_browser"),
             browser_fallback_threshold=int(os.getenv("BROWSER_FALLBACK_THRESHOLD", "3")),
             captcha_auto_attempts=int(os.getenv("CAPTCHA_AUTO_ATTEMPTS", "1")),
-            browser_reasoning_model=os.getenv("BROWSER_REASONING_MODEL", cls.browser_reasoning_model),
-            browser_vision_model=os.getenv("BROWSER_VISION_MODEL", cls.browser_vision_model),
+            browser_reasoning_model=browser_reasoning_model,
+            browser_vision_model=browser_vision_model,
             browser_headed=os.getenv("BROWSER_HEADED", "false").lower() == "true",
             kilo_api_base=os.getenv("KILO_API_BASE", cls.kilo_api_base),
             kilo_api_key=os.getenv("KILO_API_KEY", ""),
