@@ -12,15 +12,16 @@ from macgent.reasoning.llm_client import build_vision_fallback_client
 logger = logging.getLogger("macgent.dispatcher")
 
 # Config reference — set by the role before spawning an Agent
-_dispatch_config = {"workspace_dir": "", "_last_ceo_message": ""}
+_dispatch_config = {"workspace_dir": "", "_last_ceo_message": "", "_last_ceo_attachments": []}
 
 # Core skills are shipped inside the package (browser, macos, communication) — fixed
 _CORE_SKILLS_DIR = Path(__file__).parent.parent / "skills"
 
 
-def set_last_ceo_message(text: str) -> None:
+def set_last_ceo_message(text: str, attachments: list[dict] | None = None) -> None:
     """Store the last injected CEO message so re_queue_message can refer to it without params."""
     _dispatch_config["_last_ceo_message"] = text
+    _dispatch_config["_last_ceo_attachments"] = list(attachments or [])
 
 
 def set_dispatch_config(config):
@@ -643,10 +644,18 @@ def dispatch(action: Action) -> str:
             text = p.get("text", "").strip() or _dispatch_config.get("_last_ceo_message", "").strip()
             if not text:
                 return "ERROR: re_queue_message — no pending CEO message to defer"
+            attachments = _dispatch_config.get("_last_ceo_attachments", [])
             from macgent import message_bus
-            message_bus.enqueue_message("ceo", "agent", task_id=None, content=text)
+            message_bus.enqueue_message(
+                "ceo",
+                "agent",
+                task_id=None,
+                content=text,
+                attachments=attachments,
+            )
             message_bus.request_wake()
             _dispatch_config["_last_ceo_message"] = ""
+            _dispatch_config["_last_ceo_attachments"] = []
             return "Message re-queued — will be handled after the current task."
 
         elif t == "done":

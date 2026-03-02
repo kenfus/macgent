@@ -28,6 +28,27 @@ def _sys_fingerprint(alias: str, system: str | None) -> tuple[str, bool]:
     return f"[CHANGED {summary}]\n{system}\n━━━ END SYSTEM ━━━", True
 
 
+def _sanitize_content_for_log(content):
+    """Redact inline base64 image payloads before logging prompts."""
+    if isinstance(content, list):
+        return [_sanitize_content_for_log(item) for item in content]
+    if isinstance(content, dict):
+        ctype = content.get("type")
+        if ctype == "image_url":
+            image_url = content.get("image_url", {})
+            url = image_url.get("url", "")
+            if isinstance(url, str) and url.startswith("data:") and "base64," in url:
+                prefix, payload = url.split("base64,", 1)
+                return {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"{prefix}base64,<redacted:{len(payload)} chars>",
+                    },
+                }
+        return {k: _sanitize_content_for_log(v) for k, v in content.items()}
+    return content
+
+
 class ProviderError(RuntimeError):
     """Provider returned 200 OK but with no valid response body (e.g. no choices).
     Treated as retryable — the model may be briefly overloaded."""
@@ -88,13 +109,24 @@ class LLMClient:
             all_messages.append({"role": "system", "content": system})
         all_messages.extend(messages)
 
+        def _contains_image_content(items: list) -> bool:
+            for msg in items:
+                content = msg.get("content") if isinstance(msg, dict) else None
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") in {"image_url", "image"}:
+                        return True
+            return False
+
         payload = {
             "model": self.model,
             "messages": all_messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
-            "response_format": {"type": "json_object"},
         }
+        if not _contains_image_content(all_messages):
+            payload["response_format"] = {"type": "json_object"}
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",
@@ -107,7 +139,27 @@ class LLMClient:
         if "choices" not in data:
             err = data.get("error", data)
             raise ProviderError(f"No choices in response from {self.model}: {err}")
-        return data["choices"][0]["message"]["content"]
+        message = data["choices"][0].get("message", {})
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for block in content:
+                if isinstance(block, dict):
+                    if isinstance(block.get("text"), str):
+                        parts.append(block["text"])
+                elif isinstance(block, str):
+                    parts.append(block)
+            joined = "".join(parts).strip()
+            if joined:
+                return joined
+        # Some providers return reasoning content or atypical fields.
+        for key in ("reasoning_content", "output_text", "text"):
+            v = message.get(key)
+            if isinstance(v, str) and v.strip():
+                return v
+        raise ProviderError(f"No message content in response from {self.model}: {data}")
 
     def _call_anthropic(self, messages: list, system: Optional[str], max_tokens: int, temperature: float) -> str:
         url = f"{self.api_base}/v1/messages"
@@ -334,13 +386,21 @@ class FallbackLLMClient:
             if messages:
                 first = messages[0]
                 content = first.get("content", "")
-                rendered = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, indent=2)
+                rendered = (
+                    content
+                    if isinstance(content, str)
+                    else json.dumps(_sanitize_content_for_log(content), ensure_ascii=False, indent=2)
+                )
                 lines.extend(["", "━━━ TASK ━━━", "", rendered])
             # Remaining messages = multi-turn conversation (action results injected by orchestrator)
             for idx, msg in enumerate(messages[1:], 1):
                 role = msg.get("role", "?")
                 content = msg.get("content", "")
-                rendered = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, indent=2)
+                rendered = (
+                    content
+                    if isinstance(content, str)
+                    else json.dumps(_sanitize_content_for_log(content), ensure_ascii=False, indent=2)
+                )
                 lines.extend(["", f"━━━ TURN {idx} ({role}) ━━━", "", rendered])
             lines.extend(["", "LLM_PROMPT_END"])
             logger.info("\n".join(lines))

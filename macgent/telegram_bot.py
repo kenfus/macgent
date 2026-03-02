@@ -3,6 +3,9 @@
 import logging
 import httpx
 import asyncio
+import mimetypes
+from datetime import datetime
+from pathlib import Path
 
 _RETRY_STATUSES = {429, 500, 502, 503, 504}
 _MAX_RETRIES = 3
@@ -21,6 +24,78 @@ class TelegramBot:
         self.token = config.telegram_bot_token
         self.api_base = f"https://api.telegram.org/bot{self.token}"
         self.offset = 0
+
+    def _workspace_root(self) -> Path:
+        root = Path(getattr(self.config, "workspace_dir", "workspace"))
+        return root.resolve()
+
+    def _inbox_dir(self) -> Path:
+        folder = self._workspace_root() / "agent" / "inbox" / "telegram"
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+
+    async def _download_file(self, file_id: str) -> tuple[str, str] | None:
+        """Download a Telegram file and return (relative_path, media_type)."""
+        meta = await self._api_call("getFile", file_id=file_id)
+        remote_path = str(meta.get("file_path", "")).strip()
+        if not remote_path:
+            logger.warning("Telegram getFile returned no file_path for file_id=%s", file_id)
+            return None
+
+        ext = Path(remote_path).suffix or ".bin"
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        local_name = f"{stamp}_{file_id[:16]}{ext}"
+        abs_path = self._inbox_dir() / local_name
+        file_url = f"https://api.telegram.org/file/bot{self.token}/{remote_path}"
+
+        try:
+            async with httpx.AsyncClient(timeout=90) as client:
+                resp = await client.get(file_url)
+                resp.raise_for_status()
+            abs_path.write_bytes(resp.content)
+        except Exception as e:
+            logger.error("Failed to download Telegram file %s: %s", file_id, e)
+            return None
+
+        media_type = mimetypes.guess_type(abs_path.name)[0] or "application/octet-stream"
+        rel_path = abs_path.relative_to(self._workspace_root()).as_posix()
+        return rel_path, media_type
+
+    async def _collect_attachments(self, message: dict) -> list[dict]:
+        """Collect downloadable image attachments from Telegram message payload."""
+        attachments: list[dict] = []
+
+        photos = message.get("photo") or []
+        if photos:
+            best = max(
+                photos,
+                key=lambda p: int(p.get("file_size", 0) or 0) or int(p.get("width", 0)) * int(p.get("height", 0)),
+            )
+            file_id = str(best.get("file_id", "")).strip()
+            if file_id:
+                downloaded = await self._download_file(file_id)
+                if downloaded:
+                    rel_path, media_type = downloaded
+                    attachments.append(
+                        {"type": "image", "path": rel_path, "media_type": media_type, "source": "telegram_photo"}
+                    )
+
+        doc = message.get("document") or {}
+        doc_file_id = str(doc.get("file_id", "")).strip()
+        doc_mime = str(doc.get("mime_type", "")).strip().lower()
+        doc_name = str(doc.get("file_name", "")).strip().lower()
+        is_image_doc = doc_mime.startswith("image/") or doc_name.endswith(
+            (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
+        )
+        if doc_file_id and is_image_doc:
+            downloaded = await self._download_file(doc_file_id)
+            if downloaded:
+                rel_path, media_type = downloaded
+                attachments.append(
+                    {"type": "image", "path": rel_path, "media_type": media_type, "source": "telegram_document"}
+                )
+
+        return attachments
 
     async def _api_call(self, method: str, **kwargs) -> dict:
         """Make API call to Telegram Bot API with retry/backoff on transient errors."""
@@ -73,23 +148,59 @@ class TelegramBot:
     async def process_message(self, message: dict) -> None:
         """Route incoming Telegram message to the agent for LLM enhancement."""
         text = message.get("text", "").strip()
-        chat_id = str(message["chat"]["id"])
+        caption = message.get("caption", "").strip()
+        attachments = await self._collect_attachments(message)
+        has_photo = bool(message.get("photo"))
+        has_document = "document" in message
+        has_video = "video" in message
+        has_voice = "voice" in message
+        has_audio = "audio" in message
         user_id = message["from"]["id"]
         user_name = message["from"].get("first_name", "User")
 
-        if not text:
+        # Telegram media messages usually come as caption + media payload
+        # (not in `text`). Convert common content types to queueable text.
+        content = text
+        if not content and caption:
+            content = caption
+        if not content and attachments:
+            content = "[image]"
+        if not content and has_photo:
+            content = "[photo]"
+        if not content and has_document:
+            content = "[document]"
+        if not content and has_video:
+            content = "[video]"
+        if not content and has_voice:
+            content = "[voice]"
+        if not content and has_audio:
+            content = "[audio]"
+
+        if not content:
+            logger.info(
+                "Ignoring unsupported Telegram message from %s (ID %s): keys=%s",
+                user_name,
+                user_id,
+                ",".join(sorted(message.keys())),
+            )
             return
 
-        logger.info(f"Active task from {user_name} (ID {user_id}): {text[:80]}")
+        logger.info(f"Active task from {user_name} (ID {user_id}): {content[:80]}")
 
         # Store as CEO → agent message for FIFO processing.
-        message_bus.enqueue_message("ceo", "agent", task_id=None, content=text)
+        message_bus.enqueue_message(
+            "ceo",
+            "agent",
+            task_id=None,
+            content=content,
+            attachments=attachments,
+        )
 
         # Wake the agent loop immediately for active task processing.
         self._wake_manager()
 
         # Brief acknowledgment — agent will send the real response via Telegram
-        logger.info("Queued CEO message for agent processing")
+        logger.info("Queued CEO message for agent processing (attachments=%d)", len(attachments))
 
     def _wake_manager(self) -> None:
         """Signal the manager to wake up and process this task immediately."""

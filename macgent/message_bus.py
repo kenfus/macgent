@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import deque
 from datetime import datetime, timezone
 from threading import Event, Lock
+from typing import Any
 
 _messages: deque[dict] = deque()
 _lock = Lock()
@@ -12,7 +13,13 @@ _wake_event = Event()
 _next_id = 1
 
 
-def enqueue_message(from_role: str, to_role: str, task_id: str | None, content: str) -> dict:
+def enqueue_message(
+    from_role: str,
+    to_role: str,
+    task_id: str | None,
+    content: str,
+    attachments: list[dict[str, Any]] | None = None,
+) -> dict:
     """Append one message to the in-memory FIFO queue."""
     global _next_id
     with _lock:
@@ -22,6 +29,7 @@ def enqueue_message(from_role: str, to_role: str, task_id: str | None, content: 
             "to_role": to_role,
             "task_id": task_id,
             "content": content,
+            "attachments": list(attachments or []),
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         _next_id += 1

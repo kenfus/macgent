@@ -1,6 +1,8 @@
 import subprocess
 import logging
 
+from macgent.actions.vision import annotate_image, enhance_for_vision, image_to_base64, annotate_and_save  # noqa: F401
+
 logger = logging.getLogger("macgent.actions.mouse")
 
 CLICLICK = "/opt/homebrew/bin/cliclick"
@@ -44,14 +46,9 @@ def take_annotated_screenshot(
     h: int = 0,
     grid_step: int = 35,
 ) -> str:
-    """
-    Take a screenshot (optionally of a region), then burn an absolute-coordinate
-    grid onto it. Labels show screen coordinates so callers can read off the exact
-    position of any visible UI element without guessing.
-    """
-    from PIL import Image, ImageDraw, ImageFont
+    """Take a macOS screenshot (optionally of a region) and burn a coordinate grid onto it."""
+    from PIL import Image
 
-    # Capture
     if w and h:
         subprocess.run(
             ["screencapture", "-x", "-R", f"{x},{y},{w},{h}", path],
@@ -62,41 +59,11 @@ def take_annotated_screenshot(
         subprocess.run(["screencapture", "-x", path], check=True, timeout=10)
         origin_x, origin_y = 0, 0
 
-    img = Image.open(path).convert("RGBA")
-    iw, ih = img.size
-
-    # Scale factor: image pixels per logical point (1x or 2x Retina)
+    img = Image.open(path)
+    iw = img.size[0]
     scale = iw / w if w else 1.0
-
-    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
-
-    try:
-        font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", max(10, int(11 * scale)))
-    except Exception:
-        font = ImageFont.load_default()
-
-    def _draw_outlined_text(draw, pos, text, font):
-        """Draw text with a dark outline so it's readable on any background."""
-        x, y = pos
-        for dx, dy in ((-1, -1), (1, -1), (-1, 1), (1, 1), (-1, 0), (1, 0), (0, -1), (0, 1)):
-            draw.text((x + dx, y + dy), text, fill=(0, 0, 0, 255), font=font)
-        draw.text((x, y), text, fill=(255, 255, 80, 255), font=font)
-
-    # Draw grid lines and coordinate labels
-    grid_px = int(grid_step * scale)
-    for ix in range(0, iw + grid_px, grid_px):
-        px = min(ix, iw - 1)
-        abs_x = origin_x + round(px / scale)
-        draw.line([(px, 0), (px, ih)], fill=(255, 80, 80, 110), width=1)
-        _draw_outlined_text(draw, (px + 2, 2), str(abs_x), font)
-
-    for iy in range(0, ih + grid_px, grid_px):
-        py = min(iy, ih - 1)
-        abs_y = origin_y + round(py / scale)
-        draw.line([(0, py), (iw, py)], fill=(255, 80, 80, 110), width=1)
-        _draw_outlined_text(draw, (2, py + 2), str(abs_y), font)
-
-    combined = Image.alpha_composite(img, overlay).convert("RGB")
-    combined.save(path)
+    annotated = annotate_image(img, origin_x=origin_x, origin_y=origin_y, grid_step=grid_step, scale=scale)
+    annotated.save(path)
     return f"Annotated screenshot saved: {path} (grid_step={grid_step}px, origin=({origin_x},{origin_y}))"
+
+
