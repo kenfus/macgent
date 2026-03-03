@@ -44,6 +44,9 @@ wait: Wait for content to load (use after navigate or after triggering slow acti
 back: Go back in browser history
   {"reasoning": "...", "action": {"type": "back", "params": {}}}
 
+solve_captcha: Solve a CAPTCHA automatically using vision AI. Use immediately when you see a CAPTCHA (image grid tiles, checkbox, slider, text challenge). Do NOT try to click individual tiles manually.
+  {"reasoning": "...", "action": {"type": "solve_captcha", "params": {}}}
+
 done: Task is complete — include a summary of what was accomplished
   {"reasoning": "...", "action": {"type": "done", "params": {"summary": "Booked hotel X for dates Y-Z. Confirmation: ABC123"}}}
 
@@ -59,6 +62,7 @@ fail: Task cannot be completed
 5. Dismiss cookie/consent/popup dialogs immediately — click reject/close/decline first.
 6. If stuck repeating the same action, try a completely different approach.
 7. Read PAGE TEXT carefully — results and data are often already there; call done when you have what you need.
+8. CAPTCHA: When a CAPTCHA appears (image grid, checkbox, "I am not a robot"), call solve_captcha immediately — do NOT attempt to click individual CAPTCHA elements.
 
 ## Response format
 
@@ -172,7 +176,7 @@ def _parse_action(text: str) -> dict:
     return {"type": "wait", "params": {"ms": 2000}, "reasoning": "parse_error"}
 
 
-def _execute_action(browser: AgentBrowser, action: dict) -> str:
+def _execute_action(browser: AgentBrowser, action: dict, config: Any = None) -> str:
     """Execute one browser action and return a result string."""
     t = action["type"]
     p = action.get("params", {})
@@ -200,6 +204,59 @@ def _execute_action(browser: AgentBrowser, action: dict) -> str:
             return browser.wait(int(p.get("ms", 1000)))
         elif t == "back":
             return browser.back()
+        elif t == "solve_captcha":
+            import os
+            import time as _time
+            import httpx as _httpx
+            from macgent.actions.captcha_solver import solve_image_grid_captcha, CaptchaResult
+
+            screenshot_path = "/tmp/browser_captcha_solve.png"
+            browser.screenshot(screenshot_path)
+
+            kilo_key = getattr(config, "kilo_api_key", "") or os.getenv("KILO_API_KEY", "")
+            if not kilo_key:
+                return "ERROR: solve_captcha requires KILO_API_KEY in config or environment"
+
+            def _kilo_vision(image_b64: str, prompt: str, max_tokens: int = 16384) -> str:
+                resp = _httpx.post(
+                    "https://api.kilo.ai/api/gateway/chat/completions",
+                    json={
+                        "model": "moonshotai/kimi-k2.5:free",
+                        "max_tokens": max_tokens,
+                        "messages": [{"role": "user", "content": [
+                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
+                            {"type": "text", "text": prompt},
+                        ]}],
+                    },
+                    headers={"Authorization": f"Bearer {kilo_key}", "Content-Type": "application/json"},
+                    timeout=240,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                msg = data["choices"][0]["message"]
+                return (msg.get("content") or msg.get("reasoning_content") or "").strip()
+
+            result: CaptchaResult = solve_image_grid_captcha(screenshot_path, _kilo_vision, debug_dir="/tmp")
+
+            if not result.solved:
+                return f"solve_captcha: unsolved — type={result.captcha_type}"
+
+            for cx, cy in result.clicks:
+                browser.mouse_move(cx, cy)
+                _time.sleep(0.05)
+                browser.mouse_down()
+                _time.sleep(0.05)
+                browser.mouse_up()
+                _time.sleep(0.2)
+
+            if result.captcha_type == "image_grid":
+                _time.sleep(0.5)
+                try:
+                    browser.eval_js("document.querySelector('button').click()")
+                except Exception:
+                    pass
+
+            return f"solve_captcha: {result.captcha_type} solved — {len(result.clicks)} click(s)"
         else:
             return f"Unknown action: {t}"
     except Exception as e:
@@ -269,7 +326,7 @@ def run_browser_task(
                         task_desc, url, title, page_text, snapshot, history
                     )}],
                     system=BROWSER_SYSTEM_PROMPT,
-                    max_tokens=512,
+                    max_tokens=4096,
                     temperature=0.0,
                 )
             )
@@ -292,7 +349,7 @@ def run_browser_task(
                 break
 
             # --- Act ---
-            outcome = _execute_action(browser, action)
+            outcome = _execute_action(browser, action, config)
             logger.debug("step %d result: %s", step, outcome[:120])
             history.append({**action, "result": outcome})
 

@@ -155,7 +155,7 @@ class LLMClient:
             if joined:
                 return joined
         # Some providers return reasoning content or atypical fields.
-        for key in ("reasoning_content", "output_text", "text"):
+        for key in ("reasoning_content", "reasoning", "output_text", "text"):
             v = message.get(key)
             if isinstance(v, str) and v.strip():
                 return v

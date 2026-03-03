@@ -254,11 +254,19 @@ def classify_tiles(screenshot_path: str, crop_box: tuple[int, int, int, int],
         # Fallback: parse from raw response
         indices = _parse_chess_cells_from_text(response)
 
-    # Filter to valid tile indices
-    indices = [(r, c) for r, c in indices if 0 <= r < n_rows and 0 <= c < n_cols]
+    # Accept tiles slightly beyond the detected grid — the vision model may
+    # correctly identify tiles that our grid detection missed (e.g., a 4×5
+    # CAPTCHA where detect_tile_grid only found 4 cols).  We extrapolate their
+    # pixel coordinates in solve_image_grid_captcha.
+    MAX_OVER = 3
+    indices = [(r, c) for r, c in indices
+               if 0 <= r < n_rows + MAX_OVER and 0 <= c < n_cols + MAX_OVER]
+    if any(r >= n_rows or c >= n_cols for r, c in indices):
+        logger.warning(f"[classify] some tiles beyond detected grid — will extrapolate: "
+                       f"{[LETTERS[min(r,25)]+str(c+1) for r,c in indices if r >= n_rows or c >= n_cols]}")
 
     logger.info(f"[classify] tiles to click: "
-                f"{[LETTERS[r]+str(c+1) for r,c in indices]}")
+                f"{[LETTERS[min(r,25)]+str(c+1) for r,c in indices]}")
     return indices
 
 
@@ -329,10 +337,28 @@ def solve_image_grid_captcha(screenshot_path: str, vision_fn,
         logger.warning("Vision model found no target tiles")
         return result
 
+    # Estimate tile size for extrapolating out-of-bounds tiles
+    n_rows, n_cols = grid_shape
+    if n_cols > 1 and tile_centers and len(tile_centers[0]) > 1:
+        avg_tile_w = (tile_centers[0][-1][0] - tile_centers[0][0][0]) / (n_cols - 1)
+    else:
+        avg_tile_w = (crop_box[2] - crop_box[0]) / max(n_cols, 1)
+    if n_rows > 1 and len(tile_centers) > 1:
+        avg_tile_h = (tile_centers[-1][0][1] - tile_centers[0][0][1]) / (n_rows - 1)
+    else:
+        avg_tile_h = (crop_box[3] - crop_box[1]) / max(n_rows, 1)
+
+    def _tile_center(r: int, c: int) -> tuple[int, int]:
+        """Get tile center in full-page coords, extrapolating if out of bounds."""
+        r_ref = max(0, min(r, n_rows - 1))
+        c_ref = max(0, min(c, n_cols - 1))
+        bx, by = tile_centers[r_ref][c_ref]
+        return (int(bx + (c - c_ref) * avg_tile_w), int(by + (r - r_ref) * avg_tile_h))
+
     # Convert to full-page click coordinates
     raw_clicks = []
     for r, c in target_indices:
-        cx, cy = tile_centers[r][c]
+        cx, cy = _tile_center(r, c)
         raw_clicks.append((cx, cy))
 
     # Deduplicate: if our detected grid is finer than the actual CAPTCHA grid,

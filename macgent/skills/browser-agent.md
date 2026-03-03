@@ -24,7 +24,7 @@ The wrapper expects a URL in `task`.
 - `press(key)` — keyboard action
 - `mouse_wheel(dy, dx)` — scroll
 - `snapshot(interactive=true)` — list interactable elements
-- `screenshot(path)` — capture page image
+- `screenshot(path)` — capture page image and saves to `path`
 - `get_text()` / `get_title()` / `get_url()` — read page state
 
 ## Constraints
@@ -40,7 +40,7 @@ If `browser_task` returns `solved=false`, report `blocked_reason` and artifact p
 
 ## CAPTCHA Handling
 
-Use the simplest method that works. Do not force the grid solver for every CAPTCHA. Browser-agent is able to take screenshots; very rarely captchas can be solved without vision and coordinates; thus, you should solve them by using screenshots and extracting coordinates with vision tools. 
+Use the simplest method that works. Do not force the grid solver for every CAPTCHA. Browser-agent is able to take screenshots; very rarely captchas can be solved without vision and coordinates; thus, you should solve them by using screenshots and extracting coordinates with vision tools. Often, you can also solve it yourself by using `call_vision(...)` to locate the "I am human" checkbox or "Submit" button, then clicking it directly without needing the full grid solver.
 
 ### Available CAPTCHA / Vision Tools
 
@@ -48,7 +48,6 @@ Use the simplest method that works. Do not force the grid solver for every CAPTC
 |------|------------|
 | `macgent/actions/captcha_solver.py` | `solve_image_grid_captcha(screenshot_path, vision_fn)` for image-grid CAPTCHAs. Returns ordered click coordinates. |
 | `macgent/actions/vision.py` | `call_vision(image, prompt, ...)` generic multimodal call (image + prompt), plus helpers like `annotate_image_rowcol()`, `detect_tile_grid()`, `label_detected_tiles()`, `image_to_base64()`. |
-| `workspace/scripts/solve_captcha_grid.py` | Runnable end-to-end reference flow. |
 
 ### Decision Guide
 
