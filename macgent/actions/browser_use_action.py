@@ -26,11 +26,14 @@ IMPORTANT: Respond with ONLY valid JSON. No other text before or after.
 navigate: Go to a URL
   {"reasoning": "...", "action": {"type": "navigate", "params": {"url": "https://example.com"}}}
 
-click: Click an element by its @ref from the ELEMENTS list
-  {"reasoning": "...", "action": {"type": "click", "params": {"ref": "@123"}}}
+click: Click an element by its ref from the ELEMENTS snapshot. Refs appear as [ref=eN] in the snapshot — use "@eN" to click.
+  {"reasoning": "...", "action": {"type": "click", "params": {"ref": "@e1"}}}
 
 fill: Clear an input and type into it
-  {"reasoning": "...", "action": {"type": "fill", "params": {"ref": "@124", "text": "search query"}}}
+  {"reasoning": "...", "action": {"type": "fill", "params": {"ref": "@e2", "text": "search query"}}}
+
+select: Select an option from a dropdown/combobox by its display text or value. Use this for <select> elements (shown as "combobox" in the snapshot).
+  {"reasoning": "...", "action": {"type": "select", "params": {"ref": "@e3", "value": "4.5"}}}
 
 press: Press a keyboard key (Enter, Tab, Escape, ArrowDown, Space, etc.)
   {"reasoning": "...", "action": {"type": "press", "params": {"key": "Enter"}}}
@@ -44,7 +47,7 @@ wait: Wait for content to load (use after navigate or after triggering slow acti
 back: Go back in browser history
   {"reasoning": "...", "action": {"type": "back", "params": {}}}
 
-solve_captcha: Solve a CAPTCHA automatically using vision AI. Use immediately when you see a CAPTCHA (image grid tiles, checkbox, slider, text challenge). Do NOT try to click individual tiles manually.
+solve_captcha: Solve a complex image-grid CAPTCHA (e.g. "select all traffic lights / buses"). Do NOT use for simple checkboxes, "I Accept" buttons, or cookie banners — click those directly.
   {"reasoning": "...", "action": {"type": "solve_captcha", "params": {}}}
 
 done: Task is complete — include a summary of what was accomplished
@@ -56,13 +59,14 @@ fail: Task cannot be completed
 ## Rules
 
 1. Output ONLY valid JSON.
-2. Use @ref values from ELEMENTS to click/fill — they are exact Playwright element references.
+2. Refs appear as [ref=eN] in ELEMENTS — use "@eN" (with @ prefix) to click, fill, or select them.
 3. After navigate, wait before interacting (page needs to load).
-4. For search inputs: fill the field, then press Enter.
-5. Dismiss cookie/consent/popup dialogs immediately — click reject/close/decline first.
-6. If stuck repeating the same action, try a completely different approach.
-7. Read PAGE TEXT carefully — results and data are often already there; call done when you have what you need.
-8. CAPTCHA: When a CAPTCHA appears (image grid, checkbox, "I am not a robot"), call solve_captcha immediately — do NOT attempt to click individual CAPTCHA elements.
+4. **FIRST ACTION on any new page**: check ELEMENTS for cookie banners, consent dialogs, login popups, or "Sign in with Google" overlays. Dismiss them IMMEDIATELY (click "I Accept", "Accept all", "Decline", "Close", "×", or the reject/close button). These overlays block ALL other elements until dismissed.
+5. For search inputs: fill the field, then press Enter.
+6. For dropdown/combobox filters: use the select action, not click on individual options.
+7. If stuck repeating the same action, try a completely different approach.
+8. Read PAGE TEXT carefully — results and data are often already there; call done when you have what you need.
+9. Only use solve_captcha for image-grid tile challenges. Simple "I am not a robot" checkboxes or consent buttons: just click them.
 
 ## Response format
 
@@ -93,7 +97,55 @@ def _clean_js_value(value: str | None) -> str | None:
 
 
 def _format_snapshot(snapshot: dict, max_elements: int = MAX_ELEMENTS) -> str:
-    """Convert agent-browser accessibility snapshot to an LLM-readable element list."""
+    """Convert agent-browser accessibility snapshot to an LLM-readable element list.
+
+    agent-browser returns: {"success": True, "data": {"refs": {"e1": {...}}, "snapshot": "..."}}
+    The "snapshot" field is a hierarchical text tree with inline [ref=eN] markers — ideal for LLMs.
+    """
+    data = snapshot.get("data", snapshot)  # unwrap success/data envelope if present
+
+    # Prefer the rich text snapshot — hierarchy + inline refs, most LLM-friendly
+    snap_text = data.get("snapshot", "")
+    if snap_text:
+        lines = snap_text.splitlines()
+        if len(lines) > max_elements:
+            visible = lines[:max_elements]
+            # Surface cookie/consent/overlay elements that appear later in the DOM
+            # so the LLM can dismiss them even when truncated
+            overlay_keywords = ["Accept", "accept", "consent", "Consent", "cookie", "Cookie",
+                                "Decline", "decline", "privacy", "Privacy", "I agree", "I Agree"]
+            overlay_lines = [
+                l for l in lines[max_elements:]
+                if any(kw in l for kw in overlay_keywords) and "ref=" in l
+            ]
+            result = "\n".join(visible)
+            result += f"\n... ({len(lines) - max_elements} more elements, scroll to reveal)"
+            if overlay_lines:
+                result += "\n\n--- OVERLAY / CONSENT (dismiss first!) ---\n"
+                result += "\n".join(overlay_lines)
+            return result
+        return snap_text
+
+    # Fall back: parse refs dict into flat list
+    refs = data.get("refs", {})
+    if refs:
+        lines = []
+        for i, (ref_id, ref_data) in enumerate(refs.items()):
+            if i >= max_elements:
+                lines.append(f"... ({len(refs) - max_elements} more elements not shown, scroll to reveal)")
+                break
+            role = (ref_data.get("role") or "").lower()
+            name = (ref_data.get("name") or "").strip()[:70]
+            value = (ref_data.get("value") or "").strip()[:50]
+            line = f"[{role}] @{ref_id}"
+            if name:
+                line += f' "{name}"'
+            if value:
+                line += f' (value: "{value}")'
+            lines.append(line)
+        return "\n".join(lines)
+
+    # Legacy fallback: old elements list format
     elements = snapshot.get("elements", [])[:max_elements]
     lines = []
     for el in elements:
@@ -101,14 +153,12 @@ def _format_snapshot(snapshot: dict, max_elements: int = MAX_ELEMENTS) -> str:
         role = (el.get("role") or el.get("tagName", "")).lower()
         name = (el.get("name") or "").strip()[:70]
         value = (el.get("value") or "").strip()[:50]
-
         line = f"[{role}] {ref}"
         if name:
             line += f' "{name}"'
         if value:
             line += f' (value: "{value}")'
         lines.append(line)
-
     truncated = len(snapshot.get("elements", [])) - max_elements
     if truncated > 0:
         lines.append(f"... ({truncated} more elements not shown, scroll to reveal)")
@@ -190,6 +240,9 @@ def _execute_action(browser: AgentBrowser, action: dict, config: Any = None) -> 
             return f"Navigated to {url}"
         elif t == "click":
             return browser.click(p["ref"])
+        elif t == "select":
+            browser.select(p["ref"], p.get("value", ""))
+            return f"Selected '{p.get('value', '')}' in {p['ref']}"
         elif t == "fill":
             browser.fill(p["ref"], p.get("text", ""))
             return f"Filled {p['ref']}"

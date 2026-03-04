@@ -357,6 +357,10 @@ class AgentBrowser:
         """Double-click an element by selector or @ref."""
         return self._run_command("dblclick", selector)
     
+    def select(self, selector: str, *values: str) -> str:
+        """Select one or more options in a <select> dropdown by value/label."""
+        return self._run_command("select", selector, *values)
+
     def fill(self, selector: str, text: str) -> str:
         """Clear and fill an input element."""
         return self._run_command("fill", selector, text)
