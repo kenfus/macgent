@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from macgent.actions.agent_browser import AgentBrowser, StealthConfig
+from macgent.actions.agent_browser import AgentBrowser, StealthConfig, create_stealth_config_for_site
 
 logger = logging.getLogger("macgent.browser_task")
 
@@ -47,8 +47,15 @@ wait: Wait for content to load (use after navigate or after triggering slow acti
 back: Go back in browser history
   {"reasoning": "...", "action": {"type": "back", "params": {}}}
 
-solve_captcha: Solve a complex image-grid CAPTCHA (e.g. "select all traffic lights / buses"). Do NOT use for simple checkboxes, "I Accept" buttons, or cookie banners — click those directly.
-  {"reasoning": "...", "action": {"type": "solve_captcha", "params": {}}}
+solve_captcha: Solve a CAPTCHA challenge. Requires `captcha_type` — look at the page to identify which type it is before calling.
+  captcha_type options:
+    "image_grid"  — tile grid where you select images matching a category (e.g. "select all traffic lights")
+    "checkbox"    — single "I'm not a robot" checkbox click
+    "text"        — text/math challenge requiring typed answer (provide `answer` param)
+  {"reasoning": "...", "action": {"type": "solve_captcha", "params": {"captcha_type": "image_grid"}}}
+  {"reasoning": "...", "action": {"type": "solve_captcha", "params": {"captcha_type": "checkbox", "ref": "@e12"}}}
+  {"reasoning": "...", "action": {"type": "solve_captcha", "params": {"captcha_type": "text", "answer": "42"}}}
+  Do NOT use for cookie banners or "I Accept" buttons — click those directly.
 
 done: Task is complete — include a summary of what was accomplished
   {"reasoning": "...", "action": {"type": "done", "params": {"summary": "Booked hotel X for dates Y-Z. Confirmation: ABC123"}}}
@@ -66,7 +73,7 @@ fail: Task cannot be completed
 6. For dropdown/combobox filters: use the select action, not click on individual options.
 7. If stuck repeating the same action, try a completely different approach.
 8. Read PAGE TEXT carefully — results and data are often already there; call done when you have what you need.
-9. Only use solve_captcha for image-grid tile challenges. Simple "I am not a robot" checkboxes or consent buttons: just click them.
+9. solve_captcha requires captcha_type. Identify the type by looking at the page first: "image_grid" = tile selection grid, "checkbox" = single I'm-not-a-robot tick, "text" = type an answer. Cookie banners and "I Accept" buttons are NOT captchas — click them directly.
 
 ## Response format
 
@@ -226,6 +233,13 @@ def _parse_action(text: str) -> dict:
     return {"type": "wait", "params": {"ms": 2000}, "reasoning": "parse_error"}
 
 
+def _human_delay(lo: float = 0.4, hi: float = 1.2) -> None:
+    """Random human-like pause between actions."""
+    import random
+    import time as _t
+    _t.sleep(lo + random.random() * (hi - lo))
+
+
 def _execute_action(browser: AgentBrowser, action: dict, config: Any = None) -> str:
     """Execute one browser action and return a result string."""
     t = action["type"]
@@ -236,80 +250,133 @@ def _execute_action(browser: AgentBrowser, action: dict, config: Any = None) -> 
             if not url.startswith(("http://", "https://")):
                 url = "https://" + url
             browser.open(url)
-            browser.wait(1500)
+            browser.wait(2000)
+            # Inject fingerprint spoofing on every navigation
+            try:
+                browser.inject_fingerprint_spoof()
+            except Exception:
+                pass
+            _human_delay(1.0, 2.5)  # Simulate page-reading pause after load
             return f"Navigated to {url}"
         elif t == "click":
+            _human_delay(0.3, 0.9)
             return browser.click(p["ref"])
         elif t == "select":
+            _human_delay(0.3, 0.8)
             browser.select(p["ref"], p.get("value", ""))
             return f"Selected '{p.get('value', '')}' in {p['ref']}"
         elif t == "fill":
+            _human_delay(0.3, 0.7)
             browser.fill(p["ref"], p.get("text", ""))
             return f"Filled {p['ref']}"
         elif t == "type":
+            _human_delay(0.3, 0.7)
             browser.type_text(p["ref"], p.get("text", ""))
             return f"Typed into {p['ref']}"
         elif t == "press":
+            _human_delay(0.2, 0.5)
             return browser.press(p.get("key", "Enter"))
         elif t == "scroll":
+            _human_delay(0.4, 1.0)
             return browser.scroll(p.get("direction", "down"), int(p.get("pixels", 500)))
         elif t == "wait":
             return browser.wait(int(p.get("ms", 1000)))
         elif t == "back":
+            _human_delay(0.3, 0.8)
             return browser.back()
         elif t == "solve_captcha":
             import os
             import time as _time
-            import httpx as _httpx
-            from macgent.actions.captcha_solver import solve_image_grid_captcha, CaptchaResult
 
-            screenshot_path = "/tmp/browser_captcha_solve.png"
-            browser.screenshot(screenshot_path)
+            captcha_type = p.get("captcha_type", "").strip()
+            if not captcha_type:
+                return "ERROR: solve_captcha requires 'captcha_type': image_grid | checkbox | text"
 
-            kilo_key = getattr(config, "kilo_api_key", "") or os.getenv("KILO_API_KEY", "")
-            if not kilo_key:
-                return "ERROR: solve_captcha requires KILO_API_KEY in config or environment"
+            # --- checkbox: just click the ref or find the iframe checkbox ---
+            if captcha_type == "checkbox":
+                ref = p.get("ref", "")
+                if ref:
+                    browser.click(ref)
+                    return "solve_captcha: checkbox clicked"
+                # Try to find reCAPTCHA checkbox iframe and click it
+                try:
+                    browser.eval_js(
+                        "document.querySelector('iframe[title*=\"captcha\"],"
+                        "iframe[src*=\"recaptcha\"],iframe[src*=\"captcha\"]')"
+                        "?.contentDocument?.querySelector('#recaptcha-anchor')?.click()"
+                    )
+                except Exception:
+                    pass
+                return "solve_captcha: checkbox click attempted (provide ref if it fails)"
 
-            def _kilo_vision(image_b64: str, prompt: str, max_tokens: int = 16384) -> str:
-                resp = _httpx.post(
-                    "https://api.kilo.ai/api/gateway/chat/completions",
-                    json={
-                        "model": "moonshotai/kimi-k2.5:free",
-                        "max_tokens": max_tokens,
-                        "messages": [{"role": "user", "content": [
-                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
-                            {"type": "text", "text": prompt},
-                        ]}],
-                    },
-                    headers={"Authorization": f"Bearer {kilo_key}", "Content-Type": "application/json"},
-                    timeout=240,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                msg = data["choices"][0]["message"]
-                return (msg.get("content") or msg.get("reasoning_content") or "").strip()
+            # --- text: type the answer into the active/visible input ---
+            if captcha_type == "text":
+                answer = p.get("answer", "").strip()
+                if not answer:
+                    return "ERROR: solve_captcha text type requires 'answer' param"
+                ref = p.get("ref", "")
+                if ref:
+                    browser.fill(ref, answer)
+                else:
+                    browser.eval_js(
+                        f"(document.querySelector('input[type=text],input[type=number]')"
+                        f" || document.activeElement).value = {json.dumps(answer)}"
+                    )
+                return f"solve_captcha: text answer '{answer}' entered"
 
-            result: CaptchaResult = solve_image_grid_captcha(screenshot_path, _kilo_vision, debug_dir="/tmp")
+            # --- image_grid: 3-pass pipeline via vision model ---
+            if captcha_type == "image_grid":
+                import httpx as _httpx
+                from macgent.actions.captcha_solver import solve_image_grid_captcha, CaptchaResult
 
-            if not result.solved:
-                return f"solve_captcha: unsolved — type={result.captcha_type}"
+                screenshot_path = "/tmp/browser_captcha_solve.png"
+                browser.screenshot(screenshot_path)
 
-            for cx, cy in result.clicks:
-                browser.mouse_move(cx, cy)
-                _time.sleep(0.05)
-                browser.mouse_down()
-                _time.sleep(0.05)
-                browser.mouse_up()
-                _time.sleep(0.2)
+                kilo_key = getattr(config, "kilo_api_key", "") or os.getenv("KILO_API_KEY", "")
+                if not kilo_key:
+                    return "ERROR: solve_captcha requires KILO_API_KEY in config or environment"
 
-            if result.captcha_type == "image_grid":
+                def _kilo_vision(image_b64: str, prompt: str, max_tokens: int = 16384) -> str:
+                    resp = _httpx.post(
+                        "https://api.kilo.ai/api/gateway/chat/completions",
+                        json={
+                            "model": "moonshotai/kimi-k2.5:free",
+                            "max_tokens": max_tokens,
+                            "messages": [{"role": "user", "content": [
+                                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
+                                {"type": "text", "text": prompt},
+                            ]}],
+                        },
+                        headers={"Authorization": f"Bearer {kilo_key}", "Content-Type": "application/json"},
+                        timeout=240,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    msg = data["choices"][0]["message"]
+                    return (msg.get("content") or msg.get("reasoning_content") or "").strip()
+
+                captcha_result: CaptchaResult = solve_image_grid_captcha(screenshot_path, _kilo_vision, debug_dir="/tmp")
+
+                if not captcha_result.solved:
+                    return f"solve_captcha: image_grid unsolved — {captcha_result.description}"
+
+                for cx, cy in captcha_result.clicks:
+                    browser.mouse_move(cx, cy)
+                    _time.sleep(0.05)
+                    browser.mouse_down()
+                    _time.sleep(0.05)
+                    browser.mouse_up()
+                    _time.sleep(0.2)
+
                 _time.sleep(0.5)
                 try:
                     browser.eval_js("document.querySelector('button').click()")
                 except Exception:
                     pass
 
-            return f"solve_captcha: {result.captcha_type} solved — {len(result.clicks)} click(s)"
+                return f"solve_captcha: image_grid solved — {len(captcha_result.clicks)} tile(s) clicked"
+
+            return f"ERROR: unknown captcha_type '{captcha_type}' — use image_grid | checkbox | text"
         else:
             return f"Unknown action: {t}"
     except Exception as e:
@@ -354,8 +421,14 @@ def run_browser_task(
 
     browser: AgentBrowser | None = None
     try:
-        headed = bool(getattr(config, "browser_headed", False))
-        browser = AgentBrowser(StealthConfig(headed=headed))
+        headed = bool(getattr(config, "browser_headed", True))  # Default headed — headless is trivially detected
+        # Extract domain for site-specific stealth config
+        import re as _re
+        _domain_match = _re.search(r"https?://([^/]+)", task_desc)
+        _domain = _domain_match.group(1) if _domain_match else ""
+        stealth_cfg = create_stealth_config_for_site(_domain)
+        stealth_cfg.headed = headed
+        browser = AgentBrowser(stealth_cfg)
         browser.start()
 
         history: list[dict] = []
@@ -371,6 +444,19 @@ def run_browser_task(
                 snapshot = browser.snapshot(interactive=True)
             except Exception as e:
                 logger.debug("observe error step %d: %s", step, e)
+
+            # --- DataDome / hard-block detection ---
+            # "Access is temporarily restricted" = DataDome IP/device ban, not solvable
+            _BLOCK_PHRASES = [
+                "access is temporarily restricted",
+                "we detected unusual activity",
+                "unusual activity from your device",
+            ]
+            if any(phrase in page_text.lower() for phrase in _BLOCK_PHRASES):
+                result["blocked_reason"] = "datadome_ip_ban"
+                result["url"] = url
+                logger.warning("DataDome hard block detected on %s — stopping", url)
+                break
 
             # --- Think ---
             action = _parse_action(

@@ -292,7 +292,15 @@ class AgentBrowser:
             raise RuntimeError(f"agent-browser command timed out: {' '.join(args)}")
     
     def start(self) -> "AgentBrowser":
-        """Start the browser session with stealth configuration."""
+        """Start the browser session with stealth configuration.
+
+        Always kills any existing daemon first so our stealth args (user-agent,
+        --disable-blink-features=AutomationControlled, etc.) are actually applied.
+        The daemon silently ignores args when reusing an existing session, which
+        leaves navigator.webdriver=true and gets us instantly detected.
+        """
+        # Kill existing daemon so our args aren't silently ignored
+        subprocess.run([self._browser_path, "close"], capture_output=True)
         self._config_file = self._write_config_file()
         logger.info(f"Started agent-browser session with stealth config")
         logger.info(f"User-Agent: {self.config.get_user_agent()}")
@@ -533,18 +541,27 @@ class AgentBrowser:
 
 def create_stealth_config_for_site(site_url: str) -> StealthConfig:
     """Create a stealth configuration optimized for a specific site.
-    
-    This can be extended to provide site-specific configurations
-    for better anti-detection.
+
+    Uses a persistent browser profile directory per domain so that cookies,
+    localStorage, and browser history survive between sessions — a returning
+    visitor with history is far less suspicious than a fresh profile every time.
     """
-    config = StealthConfig()
-    
-    # Site-specific adjustments can be added here
+    import os, re as _re, hashlib
+
+    # Derive a stable profile dir from the domain
+    domain_match = _re.search(r"([a-z0-9-]+\.[a-z]{2,})", site_url.lower())
+    domain = domain_match.group(1) if domain_match else "default"
+    profiles_root = os.path.expanduser("~/.macgent/browser_profiles")
+    profile_path = os.path.join(profiles_root, domain)
+    os.makedirs(profile_path, exist_ok=True)
+
+    config = StealthConfig(profile_path=profile_path)
+
     if "homegate.ch" in site_url:
         # homegate.ch uses DataDome - extra stealth needed
-        config.headed = True  # Always use headed mode
-        config.locale = ["de-CH", "de", "en-US", "en"]  # Swiss German preferred
-    
+        config.headed = True
+        config.locale = ["de-CH", "de", "en-US", "en"]
+
     return config
 
 

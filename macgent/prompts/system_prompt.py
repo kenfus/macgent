@@ -92,6 +92,12 @@ evaluate_image: Send an image to the configured vision model chain (useful when 
   {"reasoning": "...", "action": {"type": "evaluate_image", "params": {"path": "screenshots/page.png", "prompt": "Describe UI elements and blockers"}}}
   {"reasoning": "...", "action": {"type": "evaluate_image", "params": {"image_base64": "...", "media_type": "image/png", "prompt": "Extract key text"}}}
 
+### Shell
+run_shell: Run a shell command in a persistent tmux session (state survives between calls: cwd, env, processes). Attach to watch: tmux attach -t macgent_shell
+  {"reasoning": "...", "action": {"type": "run_shell", "params": {"command": "ls -la"}}}
+  {"reasoning": "...", "action": {"type": "run_shell", "params": {"command": "cd ~/projects/foo && git status"}}}
+  {"reasoning": "...", "action": {"type": "run_shell", "params": {"command": "npm run dev &", "timeout": 10}}}
+
 ### Search Utility
 brave_search: Fast web search via Brave API (use this before browser navigation for research tasks)
   {"reasoning": "...", "action": {"type": "brave_search", "params": {"query": "best hotels in Basel", "count": 5}}}

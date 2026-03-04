@@ -635,6 +635,17 @@ def dispatch(action: Action) -> str:
             except subprocess.TimeoutExpired:
                 return f"ERROR: run_script timed out after {timeout}s"
 
+        elif t == "run_shell":
+            # Run a shell command in the persistent tmux session (macgent_shell).
+            # State (cwd, env vars, processes) persists between calls.
+            # Attach with: tmux attach -t macgent_shell
+            from macgent.actions.shell_session import run as _shell_run
+            command = p.get("command", "").strip()
+            if not command:
+                return "ERROR: run_shell needs 'command'"
+            timeout = int(p.get("timeout", 60))
+            return _shell_run(command, timeout=timeout)
+
         elif t == "wait":
             seconds = float(p.get("seconds", 2))
             time.sleep(seconds)

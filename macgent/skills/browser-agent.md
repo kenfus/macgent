@@ -128,7 +128,7 @@ If `browser_task` returns `solved=false`, report `blocked_reason` and artifact p
 
 ### Grid Solver (automated fallback)
 
-`solve_captcha` runs automatically — only use it when you prefer not to reason manually. However, you first need to understand what type of CAPTCHA it is (see below) and then pass the correct params:
+`solve_captcha` runs automatically — only use it when you prefer not to reason manually. However, you first need to understand what type of CAPTCHA it is (see below) and then pass the correct params; just calling solve_captcha without understanding the challenge type may lead to repeated failures:
 
 - `captcha_type`: `checkbox` | `image_grid` | `slider` | `text` | `none`
 - `clicks`: ordered `[(x, y), ...]` coordinates to click in sequence
