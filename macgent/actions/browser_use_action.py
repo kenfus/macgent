@@ -338,9 +338,9 @@ def _execute_action(browser: AgentBrowser, action: dict, config: Any = None) -> 
 
                 def _kilo_vision(image_b64: str, prompt: str, max_tokens: int = 16384) -> str:
                     resp = _httpx.post(
-                        "https://api.kilo.ai/api/gateway/chat/completions",
+                        "https://api.kilo.ai/v1/chat/completions",
                         json={
-                            "model": "moonshotai/kimi-k2.5:free",
+                            "model": "qwen/qwen3-vl-30b-a3b-thinking",
                             "max_tokens": max_tokens,
                             "messages": [{"role": "user", "content": [
                                 {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
