@@ -336,11 +336,11 @@ def _sync_daemon_loop(config, interval, once):
     import time
     import threading
     from macgent.memory import MemoryManager
-    from macgent.roles.manager import ManagerRole
+    from macgent.daemon import AgentDaemon
     from macgent.pulse import SystemPulse
 
     memory = MemoryManager(config)
-    manager = ManagerRole(config, None, memory)
+    manager = AgentDaemon(config, None, memory)
     pulse = SystemPulse(config, memory)
 
     pulse_interval = max(10, int(getattr(config, "pulse_interval", 60)))

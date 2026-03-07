@@ -1,7 +1,9 @@
-"""Minimal LLM-driven manager.
+"""Agent daemon — heartbeat loop that drives the agent tick by tick.
 
-All heartbeat decisions come from markdown instructions in workspace files.
-Python only provides context, executes returned actions, and handles loop control.
+Wakes on:
+- Schedule (every daemon_interval seconds, default 30 min)
+- Telegram message (early wake via message_bus)
+- Pulse-scheduled task (e.g. memory distillation at 04:01)
 """
 
 from __future__ import annotations
@@ -12,28 +14,82 @@ import json
 import logging
 import re
 from pathlib import Path
+from typing import Iterable
 
 from macgent.actions.dispatcher import dispatch, set_dispatch_config, set_last_ceo_message
 from macgent import message_bus
 from macgent.models import Action
-from macgent.roles.base import BaseRole
 from macgent.pulse import STATE_RELATIVE_PATH
+from macgent.reasoning.llm_client import build_text_fallback_client
 
-logger = logging.getLogger("macgent.roles.manager")
+logger = logging.getLogger("macgent.daemon")
 MAX_TURNS = 15
 
 
-class ManagerRole(BaseRole):
-    role_name = "agent"
-
+class AgentDaemon:
     def __init__(self, config, db, memory):
-        super().__init__(config, db, memory)
+        self.config = config
+        self.db = db
+        self.memory = memory
+        self._llm = build_text_fallback_client(config)
         set_dispatch_config(config)
+
+    # ------------------------------------------------------------------
+    # LLM helpers
+    # ------------------------------------------------------------------
+
+    def _call_llm(self, messages: list[dict], system: str = "", max_tokens: int = 2048) -> str:
+        content = self._llm.chat(messages=messages, system=system, max_tokens=max_tokens, temperature=0.0)
+        if not content or not content.strip():
+            raise RuntimeError("LLM returned empty response")
+        return content
+
+    def _parse_json(self, text: str) -> dict | None:
+        text = text.strip()
+        if "<think>" in text:
+            parts = text.split("</think>")
+            text = parts[-1].strip() if len(parts) > 1 else text
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+        if "```" in text:
+            m = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', text, re.DOTALL)
+            if m:
+                try:
+                    return json.loads(m.group(1).strip())
+                except json.JSONDecodeError:
+                    pass
+        start, end = text.find("{"), text.rfind("}") + 1
+        if start >= 0 and end > start:
+            try:
+                return json.loads(text[start:end])
+            except json.JSONDecodeError:
+                pass
+        return None
+
+    def _get_system_prompt(self) -> str:
+        return self.memory.build_context(self.db, "agent")
+
+    # ------------------------------------------------------------------
+    # Bootstrap
+    # ------------------------------------------------------------------
 
     def _is_bootstrapped(self) -> bool:
         base = Path(self.config.workspace_dir) / "agent"
-        # IDENTITY.md existing is the only signal that bootstrap completed.
         return (base / "IDENTITY.md").exists() or (base / "identity.md").exists()
+
+    def _load_user_prompt(self) -> str:
+        agent_dir = Path(self.config.workspace_dir) / "agent"
+        if not self._is_bootstrapped():
+            p = agent_dir / "BOOTSTRAP.md"
+            return p.read_text() if p.exists() else "Bootstrap missing. Create agent/IDENTITY.md, then continue."
+        p = agent_dir / "HEARTBEAT.md"
+        return p.read_text() if p.exists() else "Run heartbeat. Respond with heartbeat_ok if nothing to do."
+
+    # ------------------------------------------------------------------
+    # Wake / message bus
+    # ------------------------------------------------------------------
 
     def should_wake_early(self) -> bool:
         return message_bus.should_wake()
@@ -41,27 +97,16 @@ class ManagerRole(BaseRole):
     def clear_wake_request(self):
         message_bus.clear_wake()
 
-    def _load_manager_task_prompt(self) -> str:
-        manager_dir = Path(self.config.workspace_dir) / "agent"
-        if not self._is_bootstrapped():
-            p = manager_dir / "BOOTSTRAP.md"
-            if p.exists():
-                return p.read_text()
-            return "Bootstrap missing. Create agent/IDENTITY.md, then continue with heartbeat."
-
-        p = manager_dir / "HEARTBEAT.md"
-        if p.exists():
-            return p.read_text()
-        return "Run manager heartbeat based on current board/messages and respond with heartbeat_ok if nothing to do."
+    # ------------------------------------------------------------------
+    # Pulse state
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _extract_pulse_task_id(content: str) -> str | None:
-        """Parse [task_id=X] marker injected by the pulse into system messages."""
         m = re.match(r"\[task_id=([^\]]+)\]", content or "")
         return m.group(1) if m else None
 
     def _update_pulse_state(self, task_id: str, status: str) -> None:
-        """Write task completion status back to PULSE_STATE.json."""
         state_path = Path(self.config.workspace_dir) / STATE_RELATIVE_PATH
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         try:
@@ -73,68 +118,65 @@ class ManagerRole(BaseRole):
             )
             state_path.write_text(json.dumps(state, indent=2))
         except Exception as e:
-            logger.warning("Manager: could not update pulse state for '%s': %s", task_id, e)
+            logger.warning("Could not update pulse state for '%s': %s", task_id, e)
 
-    def _build_ceo_prompt_content(self, base_text: str, incoming_message: dict) -> str | list[dict]:
-        """Build a multimodal user message when CEO attachments include images."""
-        attachments = incoming_message.get("attachments") or []
-        image_attachments = [a for a in attachments if isinstance(a, dict) and a.get("type") == "image"]
-        if not image_attachments:
+    # ------------------------------------------------------------------
+    # Multimodal message building
+    # ------------------------------------------------------------------
+
+    def _build_user_content(self, base_text: str, message: dict) -> str | list[dict]:
+        """Build a multimodal user message when attachments include images."""
+        attachments = message.get("attachments") or []
+        images = [a for a in attachments if isinstance(a, dict) and a.get("type") == "image"]
+        if not images:
             return base_text
 
         content: list[dict] = [{"type": "text", "text": base_text}]
         workspace = Path(self.config.workspace_dir)
-        max_images = 3
-        loaded = 0
         notes: list[str] = []
-
-        for att in image_attachments[:max_images]:
+        loaded = 0
+        for att in images[:3]:
             rel = str(att.get("path", "")).strip()
             if not rel:
                 continue
             media_type = str(att.get("media_type", "image/jpeg")).strip() or "image/jpeg"
-            abs_path = (workspace / rel).resolve()
             try:
-                payload = base64.b64encode(abs_path.read_bytes()).decode("ascii")
+                payload = base64.b64encode((workspace / rel).resolve().read_bytes()).decode("ascii")
+                content.append({"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{payload}"}})
+                loaded += 1
             except Exception as e:
-                notes.append(f"- could not read attachment `{rel}` ({e})")
-                continue
-            content.append({"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{payload}"}})
-            loaded += 1
-
-        if len(image_attachments) > max_images:
-            notes.append(f"- omitted {len(image_attachments) - max_images} additional image attachment(s)")
+                notes.append(f"- could not read `{rel}` ({e})")
+        if len(images) > 3:
+            notes.append(f"- omitted {len(images) - 3} additional image(s)")
         if notes:
             content[0]["text"] = base_text + "\n\n## Attachment Notes\n" + "\n".join(notes) + "\n"
-        if loaded == 0:
-            return content[0]["text"]
-        return content
+        return content if loaded > 0 else content[0]["text"]
 
     @staticmethod
-    def _attachment_update_suffix(message: dict) -> str:
-        attachments = message.get("attachments") or []
-        images = [a for a in attachments if isinstance(a, dict) and a.get("type") == "image"]
+    def _attachment_suffix(message: dict) -> str:
+        images = [a for a in (message.get("attachments") or []) if isinstance(a, dict) and a.get("type") == "image"]
         if not images:
             return ""
         paths = [str(a.get("path", "")).strip() for a in images[:2] if str(a.get("path", "")).strip()]
-        path_preview = f" ({', '.join(paths)})" if paths else ""
         extra = len(images) - len(paths)
-        extra_suffix = f", +{extra} more" if extra > 0 else ""
-        return f"\n[Includes {len(images)} image attachment(s){path_preview}{extra_suffix}]"
+        return f"\n[Includes {len(images)} image(s){(' (' + ', '.join(paths) + ')') if paths else ''}{(', +' + str(extra) + ' more') if extra else ''}]"
+
+    # ------------------------------------------------------------------
+    # Main tick
+    # ------------------------------------------------------------------
 
     def tick(self) -> bool:
-        logger.info("Manager tick starting")
+        logger.info("Agent tick starting")
         bootstrapped = self._is_bootstrapped()
 
         is_active_wake = self.should_wake_early()
         if is_active_wake:
             self.clear_wake_request()
 
-        # Dequeue the next incoming message on active wake.
-        # CEO messages (from Telegram) take priority over system messages (from pulse).
         incoming_message = None
         incoming_from = None
-        system_task_id: str | None = None  # pulse task ID, for completion tracking
+        system_task_id: str | None = None
+
         if is_active_wake:
             msg = message_bus.dequeue_message("agent", from_role="ceo")
             if msg:
@@ -146,73 +188,60 @@ class ManagerRole(BaseRole):
                     system_task_id = self._extract_pulse_task_id(msg.get("content", ""))
 
             if incoming_message:
-                logger.info(
-                    "Manager loaded message (id=%s, from=%s)",
-                    incoming_message.get("id"), incoming_from,
-                )
-                # Only CEO messages go into daily memory (system tasks are maintenance noise)
+                logger.info("Loaded message (id=%s, from=%s)", incoming_message.get("id"), incoming_from)
                 if incoming_from == "ceo":
                     ts = datetime.datetime.now().strftime("%H:%M")
-                    attachment_note = self._attachment_update_suffix(incoming_message)
                     self.memory.append_to_daily_memory(
-                        f"**[{ts}] CEO:**\n{incoming_message['content']}{attachment_note}\n"
+                        f"**[{ts}] User:**\n{incoming_message['content']}{self._attachment_suffix(incoming_message)}\n"
                     )
-                # Re-signal if more messages are waiting
                 if message_bus.has_pending_messages("agent", from_role="ceo") or \
                         message_bus.has_pending_messages("agent", from_role="system"):
                     message_bus.request_wake()
                     logger.info("More messages pending — re-signalling wake")
             else:
-                logger.info("Active wake received but no queued message found")
+                logger.info("Active wake but no queued message found")
 
-        # All modes share the same full context (soul + skills + memory).
-        # Only the user prompt differs: BOOTSTRAP.md, HEARTBEAT.md, or an incoming message.
-        system = self.get_system_prompt()
-        prompt_content: str | list[dict]
+        system = self._get_system_prompt()
+
         if not bootstrapped:
-            prompt = self._load_manager_task_prompt()
+            prompt = self._load_user_prompt()
             if incoming_message:
-                label = "CEO Reply" if incoming_from == "ceo" else "System Task"
+                label = "User Reply" if incoming_from == "ceo" else "System Task"
                 base_text = prompt + f"\n\n## {label}\n\n{incoming_message['content']}\n"
-                if incoming_from == "ceo":
-                    prompt_content = self._build_ceo_prompt_content(base_text, incoming_message)
-                else:
-                    prompt_content = base_text
+                prompt_content = self._build_user_content(base_text, incoming_message) if incoming_from == "ceo" else base_text
             else:
                 prompt_content = prompt
         else:
             if incoming_message:
                 if incoming_from == "ceo":
                     base_text = (
-                        "Process this CEO message now. Execute actions as needed. "
+                        "Process this user message now. Execute actions as needed. "
                         'When fully handled, finish with {"type": "finish"}.\n\n'
-                        "## CEO Message\n\n"
-                        f"{incoming_message['content']}\n"
+                        f"## User Message\n\n{incoming_message['content']}\n"
                     )
-                    prompt_content = self._build_ceo_prompt_content(base_text, incoming_message)
+                    prompt_content = self._build_user_content(base_text, incoming_message)
                 else:
-                    # System task (e.g. memory distillation from pulse)
                     prompt_content = (
                         "Process this system task. Execute actions as needed. "
                         'When fully handled, finish with {"type": "finish"}.\n\n'
                         f"{incoming_message['content']}\n"
                     )
             else:
-                prompt_content = self._load_manager_task_prompt()
+                prompt_content = self._load_user_prompt()
 
         conversation = [{"role": "user", "content": prompt_content}]
         did_work = False
 
         for _ in range(MAX_TURNS):
             try:
-                response = self.call_llm(conversation, system=system, max_tokens=2048)
+                response = self._call_llm(conversation, system=system)
             except Exception as e:
-                logger.error("Manager LLM call failed: %s", e)
+                logger.error("LLM call failed: %s", e)
                 break
 
-            data = self.parse_json(response)
+            data = self._parse_json(response)
             if not data:
-                logger.debug("Manager returned non-JSON; stopping tick")
+                logger.debug("Non-JSON response; stopping tick")
                 break
 
             is_done = data.get("type") in ("heartbeat_ok", "finish")
@@ -221,48 +250,39 @@ class ManagerRole(BaseRole):
             actions = data.get("actions", [])
             if not actions and "action" in data:
                 actions = [data["action"]]
-            # Only treat the root object as a single action if it isn't a control/continue signal
             if not actions and "type" in data and not is_done and not is_continue:
                 actions = [data]
 
             results = []
             for a in actions:
                 if not isinstance(a, dict):
-                    results.append(f"[skipped] non-dict action: {str(a)[:80]}")
+                    results.append(f"[skipped] {str(a)[:80]}")
                     continue
-                a_type = a.get("type", "")
-                params = a.get("params", {})
-                result = self._execute_action(a_type, params)
-                results.append(f"[{a_type}] {result}")
+                result = self._execute_action(a.get("type", ""), a.get("params", {}))
+                results.append(f"[{a.get('type')}] {result}")
                 did_work = True
 
-            # If the LLM combined actions + done signal, honour both
             if is_done:
                 if system_task_id:
                     self._update_pulse_state(system_task_id, "completed")
                 return did_work
 
-            # Break only if no actions AND no explicit continue signal
             if not actions and not is_continue:
                 break
 
             conversation.append({"role": "assistant", "content": response})
-
             user_content = "Action results:\n" + "\n".join(results)
 
-            # Check for a new CEO message that arrived mid-task and inject it.
-            mid_task_msg = message_bus.dequeue_message("agent", from_role="ceo")
-            if mid_task_msg:
-                set_last_ceo_message(mid_task_msg["content"], mid_task_msg.get("attachments"))
-                attachment_suffix = self._attachment_update_suffix(mid_task_msg)
+            mid_msg = message_bus.dequeue_message("agent", from_role="ceo")
+            if mid_msg:
+                set_last_ceo_message(mid_msg["content"], mid_msg.get("attachments"))
                 user_content += (
-                    f"\n\n[UPDATE FROM VINCENZO]: {mid_task_msg['content']}{attachment_suffix}\n"
-                    "Incorporate if relevant, or call re_queue_message (no params needed) to defer."
+                    f"\n\n[User message received mid-task]: {mid_msg['content']}{self._attachment_suffix(mid_msg)}\n"
+                    "Incorporate if relevant, or call re_queue_message to defer."
                 )
 
             conversation.append({"role": "user", "content": user_content + "\n\nContinue."})
 
-        # Loop exited without a finish signal — record timeout for pulse tasks
         if system_task_id:
             self._update_pulse_state(system_task_id, "timeout")
         return did_work
@@ -274,7 +294,6 @@ class ManagerRole(BaseRole):
                 return "ERROR: send_telegram needs 'text'"
             try:
                 from macgent.telegram_bot import sync_send_message
-
                 sync_send_message(self.config, text)
                 ts = datetime.datetime.now().strftime("%H:%M")
                 self.memory.append_to_daily_memory(f"**[{ts}] Agent:**\n{text}\n")
@@ -282,10 +301,7 @@ class ManagerRole(BaseRole):
             except Exception as e:
                 return f"ERROR: send_telegram failed: {e}"
 
-        if action_type == "start_worker":
-            return "Worker start queued"
-
         try:
-            return dispatch(Action(type=action_type, params=params, reasoning="manager action"))
+            return dispatch(Action(type=action_type, params=params, reasoning="agent action"))
         except Exception as e:
             return f"ERROR: {e}"

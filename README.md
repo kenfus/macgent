@@ -108,25 +108,28 @@ flowchart TD
     B --> C
 
     C{"What triggered<br/>this tick?"}
-    C -- "30 min schedule" --> D1["📄 User prompt:<br/>HEARTBEAT.md"]
-    C -- "Telegram message" --> D2["💬 User prompt:<br/>User message text"]
-    C -- "Scheduled task" --> D3["⏰ User prompt:<br/>task description"]
+    C -- "30 min schedule" --> D1["📄 HEARTBEAT.md"]
+    C -- "Telegram message" --> D2["💬 User message"]
+    C -- "Scheduled task" --> D3["⏰ Task description"]
 
     D1 & D2 & D3 --> E
 
     E(["🤖 LLM call"])
-    E --> F{"Response type?"}
+    E --> F{"What did<br/>LLM return?"}
 
-    F -- "JSON action" --> G["⚙️ dispatcher.dispatch(action)<br/>e.g. mail_read, browser_task,<br/>run_shell, applescript…"]
-    G --> H["📨 Result appended<br/>as next user turn"]
-    H --> E
+    F -- "JSON action" --> G["⚙️ dispatcher.dispatch(action)<br/>mail_read · browser_task<br/>run_shell · applescript · …"]
+    G --> H["📨 Append result<br/>to conversation"]
+    H --> I{"Task<br/>done?"}
+    I -- "No → keep going" --> E
+    I -- "Yes → done/fail" --> Z
 
-    F -- "HEARTBEAT_OK<br/>or done/fail" --> Z([Tick ends])
+    F -- "HEARTBEAT_OK<br/>or done/fail" --> Z([✅ Tick ends])
 
     style A fill:#2d6a4f,color:#fff
     style Z fill:#2d6a4f,color:#fff
     style E fill:#1d3557,color:#fff
     style G fill:#457b9d,color:#fff
+    style I fill:#6d3a3a,color:#fff
     style B fill:#333,color:#eee
 ```
 

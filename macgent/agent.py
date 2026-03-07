@@ -66,7 +66,6 @@ class Agent:
             )
 
             action = self._think(task, observation, state.steps)
-            print(f"  Think: {action.reasoning[:120]}")
             print(f"  Action: {action.type} {action.params}")
 
             action_key = (action.type, json.dumps(action.params, sort_keys=True))
