@@ -96,6 +96,6 @@
     "telegram_chat_id_env": "TELEGRAM_CHAT_ID"
   },
   "runtime": {
-    "workspace_dir": "/Users/openclaw/github/macgent/workspace"
+    "workspace_dir": "~/.macgent/workspace"
   }
 }

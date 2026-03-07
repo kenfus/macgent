@@ -10,17 +10,6 @@ from macgent.actions.dispatcher import dispatch
 
 logger = logging.getLogger("macgent")
 
-MACOS_DIRECT_KEYWORDS = (
-    "email",
-    "mail",
-    "inbox",
-    "calendar",
-    "meeting",
-    "imessage",
-    "message",
-    "sms",
-)
-
 
 class Agent:
     def __init__(self, config: Config, db=None, task_id: str | None = None,
@@ -58,22 +47,12 @@ class Agent:
         print(f"\n{'=' * 60}")
         print(f"Task: {task}")
         print(f"Model: {self.config.reasoning_model}")
-        print(f"Browser mode: {self.config.browser_mode}")
         print(f"{'=' * 60}\n")
 
-        # macOS tasks use direct action loop (no Safari perception).
-        if self._is_macos_direct_task(task):
-            return self._run_macos_direct_loop(state, task)
+        return self._run_loop(state, task)
 
-        # All web tasks delegate to agent-browser adapter.
-        return self._run_browser_task_delegate(state, task, reason="primary_mode")
-
-    def _is_macos_direct_task(self, task: str) -> bool:
-        task_l = task.lower()
-        return any(keyword in task_l for keyword in MACOS_DIRECT_KEYWORDS)
-
-    def _run_macos_direct_loop(self, state: AgentState, task: str) -> AgentState:
-        """Run a direct-action LLM loop for macOS native actions (Mail/Calendar/iMessage)."""
+    def _run_loop(self, state: AgentState, task: str) -> AgentState:
+        """LLM-driven action loop. The LLM decides every action — including browser_task."""
         last_action_key = None
         stuck_count = 0
 
@@ -82,11 +61,8 @@ class Agent:
 
             observation = Observation(
                 url="macos://local",
-                page_title="macOS direct actions",
-                page_text=(
-                    "Use direct native actions when possible: mail_read/mail_send, "
-                    "calendar_read/calendar_add, imessage_read/imessage_send."
-                ),
+                page_title="macOS agent",
+                page_text="",
             )
 
             action = self._think(task, observation, state.steps)
@@ -127,7 +103,7 @@ class Agent:
 
             if stuck_count >= 3:
                 state.status = "failed"
-                print("\n  FAILED: Stuck repeating same action in macOS direct loop")
+                print("\n  FAILED: Stuck repeating same action")
                 break
 
             if self.db and self.task_id:
@@ -144,42 +120,6 @@ class Agent:
             state.status = "failed"
             print(f"\nMax steps ({state.max_steps}) reached")
 
-        return state
-
-    def _run_browser_task_delegate(self, state: AgentState, task: str, reason: str) -> AgentState:
-        """Delegate browsing to the browser task adapter and map response to AgentState."""
-        action = Action(
-            type="browser_task",
-            params={
-                "task": task,
-                "mode": self.config.browser_mode,
-                "max_steps": self.config.max_steps,
-                "capture_artifacts": True,
-            },
-            reasoning=f"Delegated to browser_task ({reason})",
-        )
-        obs = Observation(url="agent-browser://delegate", page_title="Delegated browser task")
-        step = Step(step_number=len(state.steps) + 1, observation=obs, action=action)
-
-        result_raw = dispatch(action)
-        step.action_result = result_raw
-        state.steps.append(step)
-
-        try:
-            payload = json.loads(result_raw)
-        except Exception:
-            payload = {"solved": False, "blocked_reason": "invalid_browser_task_result", "raw": result_raw}
-
-        solved = bool(payload.get("solved"))
-        state.status = "completed" if solved else "failed"
-
-        logger.info(
-            "browser_delegate_done reason=%s solved=%s blocked_reason=%s artifact_dir=%s",
-            reason,
-            solved,
-            payload.get("blocked_reason"),
-            payload.get("artifact_dir"),
-        )
         return state
 
     def _think(self, task: str, observation: Observation, history: list[Step]) -> Action:
