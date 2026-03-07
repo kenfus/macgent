@@ -669,6 +669,17 @@ def dispatch(action: Action) -> str:
             _dispatch_config["_last_ceo_attachments"] = []
             return "Message re-queued — will be handled after the current task."
 
+        elif t == "send_telegram":
+            text = p.get("text", p.get("message", ""))
+            if not text:
+                return "ERROR: send_telegram needs 'text'"
+            try:
+                from macgent.telegram_bot import sync_send_message
+                sync_send_message(_dispatch_config, text)
+                return f"Telegram sent: {text[:120]}"
+            except Exception as e:
+                return f"ERROR: send_telegram failed: {e}"
+
         elif t == "done":
             return "TASK_COMPLETE"
 

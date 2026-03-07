@@ -12,7 +12,7 @@ macgent runs as a persistent daemon on your Mac. You talk to it via Telegram; it
 
 macgent is primarily a **learning project** — a ground-up rebuild in pure, clean Python to deeply understand the design decisions behind tools like [openclaw](https://github.com/anthropics/claude-code) and why they work the way they do.
 
-Building it from scratch forces you to confront the real problems: how to structure memory so an agent stays coherent across days, how to keep the system prompt lean, when to let the LLM decide vs when to hard-code logic (spoiler: almost always let the LLM decide), and how to make the whole thing debuggable.
+Building it from scratch forces you to confront the real problems: how to structure memory so an agent stays coherent across days, how to keep the system prompt lean, when to let the LLM decide vs when to hard-code logic (spoiler: almost always let the LLM decide), and how to make the whole thing debuggable. It's a sandbox for experimentation and learning.
 
 If you're looking for a production-ready alternative, check out **[NanoBot](https://github.com/openclaw/nanobot)** — what I am using currently for my personal automation needs.
 
@@ -87,9 +87,6 @@ uv run macgent 'Read my last 5 emails and summarise them'
 
 # View recent log
 uv run macgent log -n 50
-
-# Edit the agent's soul
-uv run macgent soul edit agent
 ```
 
 ---

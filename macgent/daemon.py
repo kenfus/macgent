@@ -241,7 +241,8 @@ class AgentDaemon:
 
             data = self._parse_json(response)
             if not data:
-                logger.debug("Non-JSON response; stopping tick")
+                logger.warning("LLM returned non-JSON — routing to Telegram: %s", response[:200])
+                self._execute_action("send_telegram", {"text": response.strip()})
                 break
 
             is_done = data.get("type") in ("heartbeat_ok", "finish")

@@ -95,8 +95,8 @@ def get_next_action(client: LLMClient, task: str, observation: Observation,
 
     data = _extract_json(response_text)
     if data is None:
-        logger.warning(f"Failed to parse LLM response: {response_text[:300]}")
-        return Action(type="wait", params={"seconds": 2}, reasoning="Failed to parse LLM response")
+        logger.warning(f"LLM returned non-JSON — routing to Telegram: {response_text[:300]}")
+        return Action(type="send_telegram", params={"text": response_text.strip()})
 
     # Handle both {"action": {...}} and flat {"type": ...} formats
     action_data = data.get("action", data)
