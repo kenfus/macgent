@@ -284,7 +284,7 @@ def dispatch(action: Action) -> str:
             from macgent.actions import mail_actions
             return mail_actions.read_inbox(limit=int(p.get("limit", 5)))
 
-        elif t == "mail_read_full":
+        elif t == "mail_read_message":
             from macgent.actions import mail_actions
             return mail_actions.read_email(message_number=int(p.get("number", 1)))
 
