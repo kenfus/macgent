@@ -114,18 +114,9 @@ flowchart TD
     E(["🤖 LLM call"])
     E --> F{"What did<br/>LLM return?"}
 
-    F -- "plain text<br/>(not JSON)" --> T["📨 send_telegram<br/>forward text to user"]
-    T --> Z
-
     F -- "JSON action" --> G["⚙️ dispatcher.dispatch(action)<br/>mail_read · browser_task<br/>run_shell · applescript · …"]
-
-    G --> R{"Action<br/>result?"}
-    R -- "✅ success" --> H["📨 Append result<br/>to conversation"]
-    R -- "❌ error" --> ERR["📨 Append error<br/>to conversation"]
-
+    G --> H["📨 Append result or error<br/>to conversation"]
     H --> I{"Task<br/>done?"}
-    ERR --> E
-
     I -- "No → keep going" --> E
     I -- "Yes → done/fail" --> Z
 
@@ -136,8 +127,6 @@ flowchart TD
     style E fill:#1d3557,color:#fff
     style G fill:#457b9d,color:#fff
     style I fill:#6d3a3a,color:#fff
-    style ERR fill:#8b2020,color:#fff
-    style T fill:#5a4a00,color:#fff
     style B fill:#333,color:#eee
 ```
 
