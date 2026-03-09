@@ -120,7 +120,7 @@ flowchart TD
     I -- "No → keep going" --> E
     I -- "Yes → done/fail" --> Z
 
-    F -- "HEARTBEAT_OK<br/>or done/fail" --> Z([✅ Tick ends])
+    F -- "HEARTBEAT_OK<br/>or done" --> Z([✅ Tick ends])
 
     style A fill:#2d6a4f,color:#fff
     style Z fill:#2d6a4f,color:#fff
